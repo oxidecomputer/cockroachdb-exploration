@@ -36,7 +36,8 @@ resource "aws_instance" "db" {
   associate_public_ip_address = true
 
   tags = {
-    Name = "crdb_exploration: db ${count.index}"
+    Project = "crdb_exploration"
+    Name = "crdb_exploration_db_${count.index}"
   }
 
   connection {
@@ -96,7 +97,7 @@ resource "null_resource" "cluster_config" {
       "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db.*.private_ip)}\"",
       "svcadm refresh cockroachdb:default",
       "svcadm disable -st cockroachdb:default",
-      "svcadm enable -st cockroachdb:default",
+      "svcadm enable -s cockroachdb:default",
     ]
   }
 }
@@ -114,8 +115,11 @@ resource "aws_instance" "loadgen" {
   associate_public_ip_address = true
 
   tags = {
-    Name = "crdb_exploration: loadgen ${count.index}"
+    Project = "crdb_exploration"
+    Name = "crdb_exploration_loadgen_${count.index}"
   }
+
+
 }
 
 // Monitoring VM (for Prometheus and Grafana)
@@ -131,7 +135,8 @@ resource "aws_instance" "mon" {
   associate_public_ip_address = true
 
   tags = {
-    Name = "crdb_exploration: mon ${count.index}"
+    Project = "crdb_exploration"
+    Name = "crdb_exploration_mon_${count.index}"
   }
 }
 

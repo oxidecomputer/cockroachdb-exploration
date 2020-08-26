@@ -9,11 +9,15 @@ resource "aws_vpc" "crdb_exploration" {
   }
 }
 
-// We don't actually care about the specific AZ, we just want a single subnet
-// so that all our instances are located within the same AZ.
+//
+// We'll put all of our instances in one AZ (and so on one subnet) for now.  We
+// don't care much which AZ this winds up in, except that the instance types
+// that we want are not available in us-west-2d.
+//
 resource "aws_subnet" "crdb_exploration" {
   vpc_id     = aws_vpc.crdb_exploration.id
   cidr_block = "192.168.1.0/24" // plenty of addresses
+  availability_zone = "us-west-2a"
 
   tags = {
     Name = "crdb_exploration"

@@ -5,7 +5,7 @@
 
 = Control plane database testing
 
-See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requirements") for background.
+See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requirements")] for background.
 
 == Current status
 
@@ -101,12 +101,36 @@ Up to 2020-08-25:
 == Known issues
 
 * When I brought up three VMs, one time, one of the CRDB instances crashed due to the clock being too far out of sync.  This was weird because I'd already run `ntpdate` and enabled ntp.
+* Before you've initialized the CRDB cluster, if you go to the adminui, you get
+a very blank 404 page
 
 == General notes
 
 CockroachDB recently changed the default from RocksDB to PebbleDB, despite the documentation (even for the build that I'm using) not having been updated to reflect that.
 
 To make terraform forget about something: `terraform state rm aws_instance.db[0]`
+
+To list instances:
+
+[source,text]
+----
+aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform' --query 'Reservations[*].Instances[*].{Name:Tags[?Key=='"'"'Name'"'"']|[0].Value,InstanceId:InstanceId,StateName:State.Name,Internal:PrivateIpAddress,Public:PublicIpAddress}' --output json  | json -a | json -ga InstanceId StateName Internal Public Name | column -t | sort -k7n
+----
+
+To stop the instances:
+
+[source,text]
+----
+aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform'
+--query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 stop-instances --instance-ids
+----
+
+To start the instances:
+
+[source,text]
+----
+aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform' --query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 start-instances --instance-ids
+----
 
 == For further digging
 
@@ -129,3 +153,4 @@ To make terraform forget about something: `terraform state rm aws_instance.db[0]
 * http://wiki.omniosce.org/GeneralAdministration[OmniOS administration]
 * https://console.aws.amazon.com/ec2/v2/home?region=us-west-2#Instances:sort=instanceId[AWS EC2 console (us-west-2)]
 * https://www.terraform.io/docs/cli-index.html[Terraform CLI docs]
+* https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-instances.html[AWS describe-instances CLI]
