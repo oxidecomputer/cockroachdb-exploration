@@ -1,0 +1,131 @@
+// Include a Table of Contents on the left hand side.
+:toc: left
+// ":icons: font" is needed for adminition and callout icons.
+:icons: font
+
+= Control plane database testing
+
+See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requirements") for background.
+
+== Current status
+
+Successfully using Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].
+
+Plan (again, see RFD 53):
+
+* Basic testing
+** Run the load generator for a while
+** See status in "Admin UI".
+** `cockroach node status`
+** See queries with "SHOW QUERIES", etc.
+** See performance in metrics
+** Inject some failures and see what it looks like -- to the load generator as
+   well as in metrics
+*** graceful restarts
+*** kill -9
+*** hard reset OS
+*** network partition
+** Check on results:
+*** what do the load generators see?
+*** what do the server instances see?
+*** what do the metrics see?
+* Deeper testing
+** Test cold start
+** What happens if lots of data is written during an extended outage?
+** Replication -- part or all of the namespace
+** Backup / restore
+** Scale out
+** Scale down?
+
+== Planning notes
+
+Will use AWS to start playing with it.
+
+* Will use https://www.cockroachlabs.com/docs/v20.1/topology-basic-production["Basic Production"].
+* Make sure to use the https://www.cockroachlabs.com/docs/v20.1/cockroach-start#locality[locality] flag if we end up using different AZs.
+
+In terms of https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#software[host operating system]:
+
+> We recommend running a glibc-based Linux distribution and Linux kernel version from the last 5 years, such as Ubuntu, Red Hat Enterprise Linux (RHEL), CentOS, or Container-Optimized OS.
+
+We'll try illumos to see how it goes.
+
+https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#basic-hardware-recommendations[Basic hardware recommendations]: for each vCPU, it's recommended to expect 4 GiB of RAM, 60 GiB of storage, 500 disk IOPS, and 30 MBps of disk I/O.  Recommend at least 2 vCPUS and better would be 4 vCPUs per node.  Price out a 4-vCPU node?  Avoid "burstable" or "shared-core".  Use "m" (general-purpose) or "c" ("compute-optimized").  Recommend "c5d" for use with EBS using SSD instances.
+
+If we want to save cost significantly, we should shut down these instances when we don't actively need them to be running.  If we use "c5d", we'll probably lose local storage.  This would be a good reason to use "c5" with an EBS volume.  The perf will presumably be worse, but presumably not pathologically so, and we're more interested in ballpark / pathological figures than absolute best perf.  We probably don't need fantastic performance out of the gate to do basic fault testing, but we also don't want to see pathological behavior (e.g., due to starvation).
+
+Adam points out that illumos won't currently run on "c5" or other generations that require ENA networking, so we should stick with "c4" for now.
+
+https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#connection-pooling[Recommended connection pool size:] 2 * core count + ssd count.  It's unclear if this is a server-side figure or a client-side figure or what?
+
+Considerations for later:
+
+- file descriptor limit
+- cache size
+
+Load generators: There are several https://www.cockroachlabs.com/docs/v20.1/cockroach-workload.html[workload options].  Note that the workloads have a `--tolerate-errors` option.  Most promising seem like "bank", "kv", "tpcc", "ycsb".
+
+In terms of images, it looks like https://omniosce.org/setup/aws[AWS AMI images are available for recent versions of OmniOS].
+
+=== Calculating cost on AWS
+
+Requirements:
+
+* Use "c4large" for db and load generators (see above).
+* Grafana recommends 256 MiB memory + 1 CPU.
+* Prometheus seems to want 3 GiB of memory.
+* Do this all in "us-west-2" (cheaper than some other regions)
+
+Let's put Grafana + Prometheus in a single t3.medium instance.
+
+https://calculator.aws/#/estimate?id=16e6ed9a0102c9e24880a0175edaa9eef88ac8c9[Estimate:]
+
+* 6 "c4large" instances (3xCRDB + 3xload generators) with 60 GiB "gp2" storage each: $474 / month
+* 1 "t3.medium" instance (Prometheus + Grafana): $36 / month
+
+Total: $510 / month.  If we only use it for, say, 10 hours a week, that's only $30 / month.
+
+== Work log
+
+Up to 2020-08-25:
+
+* basic research: AWS, Terraform, CockroachDB deployment, OmniOS
+** find / build a simple load generator. (will use "cockroach workload" for now)
+** calculate how much it will cost to run a small cluster on AWS for a while.
+*** three instances
+*** Prometheus
+*** Grafana
+*** 1-3 load generators
+* Successfully used Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].  You need to manually run `cockroach init --insecure --host ...` on one of them to get the cluster to come up.
+
+== Known issues
+
+* When I brought up three VMs, one time, one of the CRDB instances crashed due to the clock being too far out of sync.  This was weird because I'd already run `ntpdate` and enabled ntp.
+
+== General notes
+
+CockroachDB recently changed the default from RocksDB to PebbleDB, despite the documentation (even for the build that I'm using) not having been updated to reflect that.
+
+To make terraform forget about something: `terraform state rm aws_instance.db[0]`
+
+== For further digging
+
+* https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting#capacity-planning-issues[Capacity planning issues]
+* https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting#memory-issues[Memory issues].
+
+== Caveats
+
+* Currently https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#storage[limited to 4 TiB of storage per node].
+* https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#load-balancing[They expect clients to load balance for performance and reliability.]
+
+== References
+
+* https://www.cockroachlabs.com/docs/stable/deploy-cockroachdb-on-aws.html[CockroachDB on AWS]
+* https://kbild.ch/blog/2019-02-18-awsprometheus/[Prometheus on AWS].
+* https://www.slideshare.net/mitsuhirotanda/prometheus-on-aws-63736540[Prometheus on AWS] (slide deck)
+* https://github.com/oxidecomputer/storage-exploration[Adam's Terraform config for storage exploration]
+* https://aws.amazon.com/ec2/instance-types/[AWS Instance Types]
+* https://github.com/oxidecomputer/confomat-oxide[Josh's confomat stuff]
+* http://wiki.omniosce.org/GeneralAdministration[OmniOS administration]
+* https://console.aws.amazon.com/ec2/v2/home?region=us-west-2#Instances:sort=instanceId[AWS EC2 console (us-west-2)]
+* https://www.terraform.io/docs/cli-index.html[Terraform CLI docs]
