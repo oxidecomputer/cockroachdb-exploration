@@ -2,9 +2,9 @@
 
 locals {
   // Instance types used for each component.
-  db_instance_type = "c4.large"
+  db_instance_type      = "c4.large"
   loadgen_instance_type = "c4.large"
-  mon_instance_type = "t2.medium"
+  mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
   ndbs = 3
@@ -37,7 +37,7 @@ resource "aws_instance" "db" {
 
   tags = {
     Project = "crdb_exploration"
-    Name = "crdb_exploration_db_${count.index}"
+    Name    = "crdb_exploration_db_${count.index}"
   }
 
   connection {
@@ -82,7 +82,7 @@ resource "null_resource" "cluster_config" {
   count = local.ndbs
 
   triggers = {
-    my_id = aws_instance.db[count.index].id
+    my_id       = aws_instance.db[count.index].id
     cluster_ips = "${join(",", aws_instance.db.*.private_ip)}"
   }
 
@@ -116,7 +116,7 @@ resource "aws_instance" "loadgen" {
 
   tags = {
     Project = "crdb_exploration"
-    Name = "crdb_exploration_loadgen_${count.index}"
+    Name    = "crdb_exploration_loadgen_${count.index}"
   }
 
 
@@ -136,7 +136,7 @@ resource "aws_instance" "mon" {
 
   tags = {
     Project = "crdb_exploration"
-    Name = "crdb_exploration_mon_${count.index}"
+    Name    = "crdb_exploration_mon_${count.index}"
   }
 }
 

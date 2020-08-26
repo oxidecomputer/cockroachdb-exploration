@@ -15,8 +15,8 @@ resource "aws_vpc" "crdb_exploration" {
 // that we want are not available in us-west-2d.
 //
 resource "aws_subnet" "crdb_exploration" {
-  vpc_id     = aws_vpc.crdb_exploration.id
-  cidr_block = "192.168.1.0/24" // plenty of addresses
+  vpc_id            = aws_vpc.crdb_exploration.id
+  cidr_block        = "192.168.1.0/24" // plenty of addresses
   availability_zone = "us-west-2a"
 
   tags = {
