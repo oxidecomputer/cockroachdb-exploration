@@ -110,7 +110,7 @@ resource "null_resource" "cluster_config" {
 // Load generators
 resource "aws_instance" "loadgen" {
   // Disable for now, while we're still testing the cluster.
-  count = 0
+  count = 1
 
   ami                         = data.aws_ami.image.id
   instance_type               = local.loadgen_instance_type
@@ -124,7 +124,43 @@ resource "aws_instance" "loadgen" {
     Name    = "crdb_exploration_loadgen_${count.index}"
   }
 
+  connection {
+    type = "ssh"
+    user = "root"
+    host = self.public_ip
+  }
 
+  //
+  // We set up load generators exactly the same as regular database nodes except
+  // that we don't configure or enable the CockroachDB service.  That happens as
+  // part of a separate null resource for the database instances, so this part
+  // looks the same as for the database instances.
+  //
+  provisioner "file" {
+    source      = "../vminit/dbinit.sh"
+    destination = "/tmp/dbinit.sh"
+  }
+
+  provisioner "file" {
+    source      = "../vminit/cockroachdb.tar.gz"
+    destination = "/tmp/cockroachdb.tar.gz"
+  }
+
+  provisioner "file" {
+    source      = "../vminit/ntpfix.xml"
+    destination = "/tmp/ntpfix.xml"
+  }
+
+  provisioner "file" {
+    source      = "../vminit/cockroachdb.xml"
+    destination = "/tmp/cockroachdb.xml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "bash -x /tmp/dbinit.sh \"${self.private_ip}\"",
+    ]
+  }
 }
 
 // Monitoring VM (for Prometheus and Grafana)

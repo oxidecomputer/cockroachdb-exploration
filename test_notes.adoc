@@ -1,0 +1,140 @@
+// Include a Table of Contents on the left hand side.
+:toc: left
+// ":icons: font" is needed for adminition and callout icons.
+:icons: font
+
+= Testing notes
+
+== 2020-08-27
+
+* Three databases, 1 load generator.  Each load generator can only be pointed at one database, so this shouldn't be too heavy for the whole cluster, but let's see what happens.
+* I'm going to start with the "kv" worklaod.
+
+ /cockroachdb/bin/cockroach workload init kv postgres://root@192.168.1.152:26257?sslmode=disable
+/cockroachdb/bin/cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out postgres://root@192.168.1.152:26257?sslmode=disable
+
+Things to play with:
+
+--ramp
+--max-rate
+--max-ops
+--read-percent
+--tolerate-errors
+
+I let that run for about 25-30 minutes.  End of the run:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 1661.0s        0          830.6          802.5      4.7      6.3      9.4     24.1 write
+ 1662.0s        0          827.3          802.5      4.7      6.3      9.4     16.8 write
+ 1663.0s        0          820.8          802.5      4.7      6.6     12.1     17.8 write
+ 1664.0s        0          808.1          802.5      4.7      6.6     11.5     16.8 write
+ 1665.0s        0          789.3          802.5      5.0      7.1      9.4     16.3 write
+ 1666.0s        0          764.4          802.5      5.0      7.3     11.0     16.8 write
+ 1667.0s        0          806.0          802.5      5.0      6.8      8.9     15.7 write
+ 1668.0s        0          803.0          802.5      4.7      6.6     11.0     23.1 write
+ 1669.0s        0          787.9          802.5      5.0      6.8      8.4     18.9 write
+ 1670.0s        0          809.2          802.5      5.0      6.8      9.4     12.1 write
+ 1671.0s        0          799.8          802.5      5.0      7.1      9.4     15.7 write
+ 1672.0s        0          838.8          802.5      4.7      6.3     11.0     19.9 write
+ 1673.0s        0          840.4          802.5      4.5      6.3     11.0     16.3 write
+ 1674.0s        0          806.9          802.5      4.7      7.3      9.4     14.7 write
+^CHighest sequence written: 1343922. Can be passed as --write-seq=R1343922 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+ 1674.6s        0        1343922          802.5      5.0      4.7      6.8     11.5     65.0  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+ 1674.6s        0        1343922          802.5      5.0      4.7      6.8     11.5     65.0
+----
+
+This created kv-histograms-2020-08-27T17:29:16Z.out.
+
+I'm going to try it again for a few minutes to see if the initial spike in latency is one-time or not.
+
+[source,text]
+----
+$ /cockroachdb/bin/cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --duration 5m postgres://root@192.168.1.152:26257?sslmode=disable 
+
+...
+
+Highest sequence written: 239288. Can be passed as --write-seq=R239288 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+  300.0s        0         239284          797.6      5.0      4.7      6.8     12.6    125.8  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+  300.0s        0         239284          797.6      5.0      4.7      6.8     12.6    125.8
+----
+
+This created kv-histograms-2020-08-27T17:59:04Z.out.
+
+The latency spike up front happened again.
+
+Let's try out the --max-rate option to place a cap at 500 operations.  (I accidentally used --max-ops first, which exited quickly!)
+
+cockroachdb@ip-192-168-1-192:~$ /cockroachdb/bin/cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --max-rate 500 postgres://root@192.168.1.152:26257?sslmode=disable 
+
+That seemed to work reasonably well.  There are a ton of metrics in the Admin UI dashboard!
+
+[source,text]
+----
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+  362.6s        0         178192          491.4      4.0      3.7      5.8     12.1     88.1  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+  362.6s        0         178192          491.4      4.0      3.7      5.8     12.1     88.1  
+----
+
+This created kv-histograms-2020-08-27T18:08:37Z.out.
+
+Let's try `--ramp`.  I used 30s first, but that's too fast to really see the effect.  I'm going to try this again with 5m.
+
+[source,text]
+----
+cockroachdb@ip-192-168-1-192:~$ /cockroachdb/bin/cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --ramp=5m --max-rate 700 postgres://root@192.168.1.152:26257?sslmode=disable 
+...
+^CHighest sequence written: 588373. Can be passed as --write-seq=R588373 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+  655.4s        0         435950          665.2      4.7      4.5      6.6     11.5     56.6  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+  655.4s        0         435950          665.2      4.7      4.5      6.6     11.5     56.6
+----
+
+This created kv-histograms-2020-08-27T18:18:53Z.out.  That seemed to do what I expected -- ramped up over several minutes and capped around 700.
+
+The histogram file looks to be per-second histograms.
+
+I want to throw some reads into the mix, but one of the nodes has become "suspect" because its clock is too far off.  I'm starting to get:
+
+[source,text]
+----
+W200827 18:41:29.280504 1064 kv/kvserver/replica_range_lease.go:555  [n2,s2,r10/
+3:/Table/1{4-5}] can't determine lease status of (n2,s2):3 due to node liveness
+error: node not in the liveness table
+(1) attached stack trace
+  | github.com/cockroachdb/cockroach/pkg/kv/kvserver.init
+  |     /ws/cockroach/gopath/src/github.com/cockroachdb/cockroach/pkg/kv/kvserve
+r/node_liveness.go:44
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5420
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.main
+  |     /opt/go/1.14.4/src/runtime/proc.go:190
+  | runtime.goexit
+  |     /opt/go/1.14.4/src/runtime/asm_amd64.s:1373
+----
+
+Two of them have gone into maintenance now.
+
+
