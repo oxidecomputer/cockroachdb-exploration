@@ -60,6 +60,11 @@ resource "aws_instance" "db" {
   }
 
   provisioner "file" {
+    source      = "../vminit/ntpfix.xml"
+    destination = "/tmp/ntpfix.xml"
+  }
+
+  provisioner "file" {
     source      = "../vminit/cockroachdb.xml"
     destination = "/tmp/cockroachdb.xml"
   }

@@ -98,9 +98,19 @@ Up to 2020-08-25:
 *** 1-3 load generators
 * Successfully used Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].  You need to manually run `cockroach init --insecure --host ...` on one of them to get the cluster to come up.
 
+2020-08-26:
+
+* fixed bugs in Terraform config
+** cockroachdb SMF service was disabled on reboot (was using `svcadm enable -t`)
+** `terraform apply` could fail if the VPC subnet wound up in us-west-2d because our instance types aren't supported there
+** it would be convenient if the instance names didn't have spaces
+** it would be convenient if there were a single tag for all of our instances so
+we could select them without relying on my specific key
+* successful cold start
+* lots of NTP issues: see GitHub issue #1.  These appear to be mitigated.
+
 == Known issues
 
-* When I brought up three VMs, one time, one of the CRDB instances crashed due to the clock being too far out of sync.  This was weird because I'd already run `ntpdate` and enabled ntp.
 * Before you've initialized the CRDB cluster, if you go to the adminui, you get
 a very blank 404 page
 
@@ -110,26 +120,32 @@ CockroachDB recently changed the default from RocksDB to PebbleDB, despite the d
 
 To make terraform forget about something: `terraform state rm aws_instance.db[0]`
 
-To list instances:
+To list _all_ instances created with a particular key:
 
 [source,text]
 ----
 aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform' --query 'Reservations[*].Instances[*].{Name:Tags[?Key=='"'"'Name'"'"']|[0].Value,InstanceId:InstanceId,StateName:State.Name,Internal:PrivateIpAddress,Public:PublicIpAddress}' --output json  | json -a | json -ga InstanceId StateName Internal Public Name | column -t | sort -k7n
 ----
 
+To list instances created for this exploration:
+
+[source,text]
+----
+aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' --query 'Reservations[*].Instances[*].{Name:Tags[?Key=='"'"'Name'"'"']|[0].Value,InstanceId:InstanceId,StateName:State.Name,Internal:PrivateIpAddress,Public:PublicIpAddress}' --output json  | json -a | json -ga InstanceId StateName Internal Public Name | column -t | sort -k5
+----
+
 To stop the instances:
 
 [source,text]
 ----
-aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform'
---query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 stop-instances --instance-ids
+aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 'Name=instance-state-name,Values=running' --query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 stop-instances --instance-ids
 ----
 
 To start the instances:
 
 [source,text]
 ----
-aws ec2 describe-instances --filters 'Name=key-name,Values=dap-terraform' --query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 start-instances --instance-ids
+aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 'Name=instance-state-name,Values=stopped' --query 'Reservations[*].Instances[*].{Instance:InstanceId}' | json -a | json -ga Instance | xargs -t aws ec2 start-instances --instance-ids
 ----
 
 == For further digging
