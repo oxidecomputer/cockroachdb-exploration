@@ -34,7 +34,6 @@ resource "aws_instance" "db" {
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
-  iam_instance_profile        = aws_iam_instance_profile.primary.id
 
   tags = {
     Project = "crdb_exploration"

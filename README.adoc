@@ -158,10 +158,6 @@ aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 
 * Currently https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#storage[limited to 4 TiB of storage per node].
 * https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#load-balancing[They expect clients to load balance for performance and reliability.]
 
-Regarding the Terraform deployment: note that we sometimes hit:
-https://github.com/terraform-providers/terraform-provider-aws/issues/12533
-Retrying `terraform apply` has worked around the issue.
-
 == References
 
 * https://www.cockroachlabs.com/docs/stable/deploy-cockroachdb-on-aws.html[CockroachDB on AWS]
