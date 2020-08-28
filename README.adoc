@@ -36,6 +36,34 @@ Plan (again, see RFD 53):
 ** Backup / restore
 ** Scale out
 ** Scale down?
+** Draining a node
+** Use "debug" commands to poke at internals
+
+== Usage synopsis
+
+To deploy a cluster, you need to have:
+
+- terraform configured using your AWS account
+- an ssh key configured in AWS called "dap-terraform" OR change locals.ssh_key_name in terraform/nodes.tf to refer to your key's name
+
+You will first need to construct the tarball used on each host.  This is not yet automated.  Do it with:
+
+[source,text]
+----
+$ cd vminit
+$ tar czf vminit.tar.gz bin etc lib sbin share smf var
+$ cd ..
+----
+
+Then use terraform to deploy the cluster:
+
+[source,text]
+----
+$ cd terraform
+$ terraform apply
+----
+
+This will emit the public IPs of the database nodes and the load generator.  Log into any one of those and run `cockroach init --insecure --host=INTERNAL_IP_OF_ANY_OF_THE_NODES`.
 
 == Planning notes
 
@@ -85,34 +113,11 @@ https://calculator.aws/#/estimate?id=16e6ed9a0102c9e24880a0175edaa9eef88ac8c9[Es
 
 Total: $510 / month.  If we only use it for, say, 10 hours a week, that's only $30 / month.
 
-== Work log
-
-Up to 2020-08-25:
-
-* basic research: AWS, Terraform, CockroachDB deployment, OmniOS
-** find / build a simple load generator. (will use "cockroach workload" for now)
-** calculate how much it will cost to run a small cluster on AWS for a while.
-*** three instances
-*** Prometheus
-*** Grafana
-*** 1-3 load generators
-* Successfully used Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].  You need to manually run `cockroach init --insecure --host ...` on one of them to get the cluster to come up.
-
-2020-08-26:
-
-* fixed bugs in Terraform config
-** cockroachdb SMF service was disabled on reboot (was using `svcadm enable -t`)
-** `terraform apply` could fail if the VPC subnet wound up in us-west-2d because our instance types aren't supported there
-** it would be convenient if the instance names didn't have spaces
-** it would be convenient if there were a single tag for all of our instances so
-we could select them without relying on my specific key
-* successful cold start
-* lots of NTP issues: see GitHub issue #1.  These appear to be mitigated.
-
 == Known issues
 
 * Before you've initialized the CRDB cluster, if you go to the adminui, you get
 a very blank 404 page
+* CockroachDB crashes pretty roughly when the clocks go out of sync.
 
 == General notes
 
@@ -157,6 +162,8 @@ aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 
 
 * Currently https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#storage[limited to 4 TiB of storage per node].
 * https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#load-balancing[They expect clients to load balance for performance and reliability.]
+* Regarding https://news.ycombinator.com/item?id=20098942[use of something like ZFS snapshots for backup].
+* I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.
 
 == References
 
