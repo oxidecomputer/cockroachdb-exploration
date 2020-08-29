@@ -15,6 +15,9 @@
         <dependency name="dep3" grouping="require_all" restart_on="error" type="service" >
             <service_fmri value="svc:/milestone/name-services:default" />
         </dependency>
+        <dependency name="dep4" grouping="require_all" restart_on="error" type="service" >
+            <service_fmri value="svc:/network/chrony:default" />
+        </dependency>
         <exec_method type="method" name="start" exec="/cockroachdb/bin/cockroach start --insecure --store /cockroachdb/data --http-addr=127.0.0.1:8080 --listen-addr=%{config/my_internal_ip} --join=%{config/other_internal_ips} --background" timeout_seconds="60" >
             <method_context working_directory="/" >
                 <method_credential user="cockroachdb" />
