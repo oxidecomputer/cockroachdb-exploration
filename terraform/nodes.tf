@@ -100,7 +100,7 @@ resource "null_resource" "cluster_config" {
 // Load generators
 resource "aws_instance" "loadgen" {
   // Disable for now, while we're still testing the cluster.
-  count = 2
+  count = 1
 
   ami                         = data.aws_ami.image.id
   instance_type               = local.loadgen_instance_type
@@ -146,7 +146,7 @@ resource "aws_instance" "loadgen" {
 // Monitoring VM (for Prometheus and Grafana)
 resource "aws_instance" "mon" {
   // Disable for now, while we're still testing the cluster.
-  count = 0
+  count = 1
 
   ami                         = data.aws_ami.image.id
   instance_type               = local.mon_instance_type

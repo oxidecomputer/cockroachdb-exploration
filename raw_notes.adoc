@@ -197,3 +197,100 @@ At about 2020-08-27T23:16Z, I activated statement diagnostics for the UPSERT tha
 > Fixed a bug causing the raw trace file collected inside a statement diagnostics bundle to be sometimes empty when the cluster setting sql.trace.txn.enable_threshold was in use. #50914
 
 although in our case `sql.trace.txn.enable_threshold` is 0 (disabled).  Maybe not the same issue.
+
+== 2020-08-31
+
+Went through:
+
+* https://www.cockroachlabs.com/docs/v20.1/learn-cockroachdb-sql.html[Learn CockroachDB SQL] (this was just basic SQL)
+** https://www.cockroachlabs.com/docs/v20.1/developer-guide-overview.html[Developer Guide]
+** Skipped exercises under https://www.cockroachlabs.com/docs/v20.1/deploy-a-test-cluster.html[Test deployment] -- these were too basic or exercised K8s behavior.
+** Skimmed the https://www.cockroachlabs.com/docs/v20.1/performance.html[Performance Guide]
+** https://www.cockroachlabs.com/docs/v20.1/monitoring-and-alerting.html[Prometheus stuff]
+** Skimmed https://www.cockroachlabs.com/docs/v20.1/configure-replication-zones.html[Replication Zones]
+** https://www.cockroachlabs.com/docs/v20.1/manage-long-running-queries.html[Long-running queries]
+** Read through https://www.cockroachlabs.com/docs/v20.1/remove-nodes.html[Decommision nodes]
+** Read through https://www.cockroachlabs.com/docs/v20.1/disaster-recovery.html[disaster recovery]
+** Skimmed through https://www.cockroachlabs.com/docs/v20.1/troubleshooting-overview.html[Troubleshooting section]
+
+Exercised replication + rebalancing tutorial:
+
+* Started with a cluster with 65 ranges: internal data + some poking around with the "movr" dataset.
+* That's 65 ranges with replication factor 3 divided across 3 nodes = 65 replicas per node (confirmed).
+* Started a fourth node: expect ~48 replicas per node (65 ranges times replication factor 3 divided by 4 nodes)
+* Final state: between 46 - 50 replicas per node.  Stopped slightly before I expected, but well within reasonable.
+
+Now I want to decommission that fourth node.
+
+```
+/cockroachdb/bin/cockroach node decommission 4 --insecure --host 192.168.1.46
+...
+  id | is_live | replicas | is_decommissioning |   membership   | is_draining
+-----+---------+----------+--------------------+----------------+--------------
+   4 |  true   |        0 |        true        | decommissioned |    false
+(1 row)
+
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+```
+
+For good measure, I drained it before disabling it:
+
+```
+root@ip-192-168-1-46:~# /cockroachdb/bin/cockroach node drain --insecure --host 192.168.1.46
+node is draining... remaining: 1
+node is draining... remaining: 0 (complete)
+ok
+root@ip-192-168-1-46:~# svcadm disable -s cockroachdb
+root@ip-192-168-1-46:~#
+```
+
+Then I removed it with Terraform.  (Fortunately, just decrementing the count of db nodes caused Terraform to want to destroy this one and not some other one.)
+
+After a few minutes, the UI reports the node as decommissioned.
+
+---
+
+I'm now switching over to fleshing out more of the deployment: Prometheus + Grafana for better situational awareness, plus haproxy so I can do more interesting load testing like shutting off individual nodes.
+
+---
+
+Prometheus:
+* building from scratch for illumos
+** need: golang, nodejs, yarn
+*** added OmniOSce "extra" publisher
+*** installed golang 1.14 (plus add path)
+*** installed nodejs 12
+*** used `npm install -g yarn` (plus add path)
+*** needed to install gnu-tar and put that onto PATH before tar
+*** needed to set TMPDIR=/var/tmp because /tmp isn't big enough.
+*** needed to build `promu` first because the build doesn't have a binary for that but doesn't handle that case.  See https://elatov.github.io/2020/04/monitoring-other-targets-with-prometheus/#compiling-node_exporter-on-omnios[here].  Worked around as described there, by pulling `promu` source.
+*** also needed to apply patch below to client_unix.go.
+
+[source,text]
+----
+diff --git a/vendor/github.com/docker/docker/client/client_unix.go b/vendor/github.com/docker/docker/client/client_unix.go
+index 178ff6740..69fb1b48f 100644
+--- a/vendor/github.com/docker/docker/client/client_unix.go
++++ b/vendor/github.com/docker/docker/client/client_unix.go
+@@ -1,4 +1,4 @@
+-// +build linux freebsd openbsd netbsd darwin dragonfly
++// +build linux freebsd openbsd netbsd darwin dragonfly illumos
+
+ package client // import "github.com/docker/docker/client"
+----
+
+Grafana: huge pain, but ultimately:
+* need at least 8G of memory (!)
+* install yarn, node, go, etc.
+* git clone
+* git checkout # tag you want
+* `rm -rf packages/grafana-e2e`
+* `yarn install --pure-lockfile` or whatever
+* `yarn start` or whatever (might be able to use `go run build.go build-frontend` instead)
+* `go run build.go build`
+* `go run build.go pkg-archive`
+
+TODO:
+* https://github.com/prometheus/blackbox_exporter
+* https://github.com/prometheus/node_exporter
+* set up elastic IP for my dev zone
