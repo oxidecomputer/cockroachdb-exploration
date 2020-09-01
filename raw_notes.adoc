@@ -3,7 +3,7 @@
 // ":icons: font" is needed for adminition and callout icons.
 :icons: font
 
-= Testing notes
+= Raw notes
 
 == Up to 2020-08-25
 
@@ -289,8 +289,55 @@ Grafana: huge pain, but ultimately:
 * `yarn start` or whatever (might be able to use `go run build.go build-frontend` instead)
 * `go run build.go build`
 * `go run build.go pkg-archive`
+* (appeared to be missing `make build` (for `make build-js`) there?)
+
+== 2020-09-01
+
+* Set up elastic IP for my dev zone.  This looks like about $44/year if my instance were off the whole year, which seems reasonable.
+* Next:
+** manual deployment of Prometheus in "mon" VM
+** manual deployment of Grafana in "mon" VM
+** automatically distribute "db" cluster config to all VMs so that we can easily source this in cockroach tools and Prometheus service discovery
+** automate deployment of Prometheus + Grafana
+** set up haproxy in load generator VM(s)
+** set up other Prometheus exporters (blackbox_exporter, node_exporter)
+
+Setting up "mon" VM:
+
+* use user called "mon" for Prometheus and Grafana
+* /export/home/mon/{bin,etc,grafana,var/prometheus/data}
+
+So it will look like:
+
+[source,text]
+----
+/export/home/mon/bin/prometheus
+/export/home/mon/etc/prometheus.yml
+/export/home/mon/var/prometheus/data/...
+/export/home/mon/grafana/
+----
+
+prometheus to be invoked as: prometheus --storage.tsdb.path=... --config.file=... &
+restart, stop with :kill?  (that doesn't make sense)
+refresh: kill -HUP?
+
+NOTE: cockroachdb on one node went into maintenance on boot again because of clock issues.  This time, chrony had definitely finished starting before cockroachdb went into maintenance.  Is this going to be a serious problem?
+
+I did eventually get Prometheus set up pulling from CockroachDB.
+
+I tried running Grafana, but found that my build was busted in a way that only fails when you go to configure a data source in the web UI.
+
+Finally got that fixed.
 
 TODO:
+* Some kind of alias for my ssh tunnels:
+`ssh -L9090:192.168.1.4:9090 -L3000:192.168.1.4:3000 -L80:192.168.1.220:8080 root@52.10.93.230`
+* Package up the "mon" VM and redeploy it with Terraform
+** use EC2 service discovery?
+* Grafana tweaks:
+** config file, generated data should live outside of the unpacked tarball so
+   it's easier to upgrade
+** include dashboards?  but these might need to be tweaked
+** how do I see client queries failing due to unavailability of the cluster?
 * https://github.com/prometheus/blackbox_exporter
 * https://github.com/prometheus/node_exporter
-* set up elastic IP for my dev zone

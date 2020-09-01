@@ -6,3 +6,5 @@ vminit/lib/
 vminit/sbin/
 vminit/share/
 vminit/vminit.tar.gz
+vminit/binaries.tgz
+vminit/grafana-*illumos*amd64*.tar.gz
