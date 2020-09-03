@@ -1,0 +1,18 @@
+:toc: left
+:icons: font
+
+= fetcher
+
+"fetcher" is a very basic tool for fetching assets from S3.  It's intended to run inside an EC2 instance and it uses the instance's IAM profile.  The idea is that you upload "fetcher" (which is small) to the VM and use it to fetch bigger assets.  For this reason, you almost certainly want to use a release build.  The debug build is almost 90 MiB, while a gzipped release build is only about 6 MiB.  Build with:
+
+```
+$ cargo build --release
+```
+
+Run it as:
+
+```
+fetcher S3_BUCKET S3_KEY > /var/tmp/some_path
+```
+
+It currently always looks for the S3 object in the `us-west-2` AWS region.
