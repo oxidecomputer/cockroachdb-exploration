@@ -64,9 +64,10 @@ You will first need to construct the tarball used on each host.  This is not yet
 [source,text]
 ----
 $ cd vminit
-$ tar czf vminit.tar.gz bin etc lib sbin share smf var
-$ cd ..
+$ make
 ----
+
+But you need several binaries that are not in this repo for practical reasons.
 
 Then use terraform to deploy the cluster:
 
@@ -179,6 +180,10 @@ aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 
 * I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.
 * https://www.cockroachlabs.com/docs/v20.1/known-limitations.html#cold-starts-of-large-clusters-may-require-manual-intervention[Ugly looking bug around cluster startup]
 * https://www.cockroachlabs.com/docs/v20.1/rename-table#table-renaming-considerations[Table renaming is not transactional]
+
+Regarding the Terraform deployment: note that we sometimes hit:
+https://github.com/terraform-providers/terraform-provider-aws/issues/12533
+Retrying `terraform apply` has worked around the issue.
 
 == References
 

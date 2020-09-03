@@ -16,6 +16,7 @@ AWSALIASES_QUERY="${AWSALIASES_QUERY},InstanceId:InstanceId"
 AWSALIASES_QUERY="${AWSALIASES_QUERY},StateName:State.Name"
 AWSALIASES_QUERY="${AWSALIASES_QUERY},Internal:PrivateIpAddress"
 AWSALIASES_QUERY="${AWSALIASES_QUERY},Public:PublicIpAddress}"
+AWSALIASES_ROOT="$(cd $(dirname ${BASH_SOURCE[0]}); pwd)"
 
 #
 # List all instances associated with the key above, not just those in the
@@ -65,4 +66,36 @@ function start_project_instances {
 	list_project_instances_raw \
 	    | json -ga InstanceId  \
 	    | xargs -t aws ec2 start-instances --instance-ids
+}
+
+#
+# Set up ssh tunnels for key services.
+#
+function start_project_ssh {
+	local mon_internal_ip db_internal_ip any_external_ip
+	local terraform_output
+
+	terraform_output="$(cd $AWSALIASES_ROOT/terraform && \
+	    terraform output -json \
+	    | json mon_internal_ip.value.0 db_internal_ip.value.0 \
+	      db_external_ip.value.0)"
+
+	read mon_internal_ip db_internal_ip any_external_ip \
+	    <<< $terraform_output
+	echo "mon internal IP: $mon_internal_ip"
+	echo "db0 internal IP: $db_internal_ip"
+	echo "db0 external IP: $any_external_ip"
+	#
+	# Ports:
+	#
+	#    9090  Prometheus web UI
+	#    3000  Grafana web UI
+	#    8080  CockroachDB Admin UI
+	#
+	ports="-L9090:$mon_internal_ip:9090"
+	ports="$ports -L3000:$mon_internal_ip:3000"
+	ports="$ports -L8080:$db_internal_ip:8080"
+	# TODO This option is not secure.
+	options="-o \"StrictHostKeyChecking accept-new\""
+	echo "ssh $options $ports root@$any_external_ip"
 }

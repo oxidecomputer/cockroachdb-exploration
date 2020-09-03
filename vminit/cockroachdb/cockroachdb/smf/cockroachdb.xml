@@ -30,7 +30,7 @@
         </property_group>
         <template >
             <common_name >
-                <loctext xml:lang="C" >CockroachDB node</loctext>
+                <loctext xml:lang="C" >CockroachDB</loctext>
             </common_name>
         </template>
     </service>

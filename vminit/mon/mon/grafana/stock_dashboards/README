@@ -1,0 +1,24 @@
+The dashboards in this directory come from two places.
+
+(1) CockroachDB publishes four "starter" dashboards for observing CockroachDB in
+    Grafana:
+
+        https://github.com/cockroachdb/cockroach/tree/master/monitoring/grafana-dashboards
+
+    These are the source of "replicas.json", "runtime.json", "sql.json", and
+    "storage.json".
+
+(2) Grafana itself ships dashboards for monitoring itself and Prometheus.  In a
+    built Grafana tarball, you can find this in
+    ./public/app/plugins/datasource/prometheus/dashboards.
+
+The dashboards in this directory have been modified in one small way: while the
+stock dashboards are parametrized by the name of the datasource
+("$DS_PROMETHEUS" for most of them, "$DS_NAME" for a few), this is not currently
+supported for "provisioned" dashboards (which is what we're shipping here):
+
+    https://github.com/grafana/grafana/issues/10786
+
+So we have removed this "input" by hand (at the top of the file) and done a
+simple find/replace of "${DS_PROMETHEUS}" and "${DS_NAME}" with "Prometheus",
+which is the actual name of our Prometheus data source.

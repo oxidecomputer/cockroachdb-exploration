@@ -19,7 +19,7 @@
       <service_fmri value='svc:/network/ntp:default'/>
     </dependency>
 
-    <exec_method name='start' type='method' exec='/cockroachdb/sbin/chronyd -f /cockroachdb/etc/chrony.conf' timeout_seconds='600' />
+    <exec_method name='start' type='method' exec='/opt/oxide/sbin/chronyd -f /opt/oxide/etc/chrony.conf' timeout_seconds='600' />
     <exec_method name='stop' type='method' exec=':kill' timeout_seconds='60'/>
     <instance name='default' enabled='true' />
     <stability value='Unstable'/>

@@ -34,9 +34,11 @@ resource "aws_instance" "db" {
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.primary.id
 
   tags = {
     Project = "crdb_exploration"
+    Role    = "crdb_exploration_db"
     Name    = "crdb_exploration_db_${count.index}"
   }
 
@@ -55,13 +57,13 @@ resource "aws_instance" "db" {
   }
 
   provisioner "file" {
-    source      = "../vminit/vminit.tar.gz"
-    destination = "/var/tmp/vminit.tar.gz"
+    source      = "../vminit/fetcher.gz"
+    destination = "/var/tmp/fetcher.gz"
   }
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"db\" \"db${count.index}\" \"${self.private_ip}\"",
     ]
   }
 }
@@ -99,7 +101,6 @@ resource "null_resource" "cluster_config" {
 
 // Load generators
 resource "aws_instance" "loadgen" {
-  // Disable for now, while we're still testing the cluster.
   count = 1
 
   ami                         = data.aws_ami.image.id
@@ -108,6 +109,7 @@ resource "aws_instance" "loadgen" {
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.primary.id
 
   tags = {
     Project = "crdb_exploration"
@@ -120,32 +122,26 @@ resource "aws_instance" "loadgen" {
     host = self.public_ip
   }
 
-  //
-  // We set up load generators exactly the same as regular database nodes except
-  // that we don't configure or enable the CockroachDB service.  That happens as
-  // part of a separate null resource for the database instances, so this part
-  // looks the same as for the database instances.
-  //
+  // See "db" instances.
   provisioner "file" {
     source      = "../vminit/vminit.sh"
     destination = "/var/tmp/vminit.sh"
   }
 
   provisioner "file" {
-    source      = "../vminit/vminit.tar.gz"
-    destination = "/var/tmp/vminit.tar.gz"
+    source      = "../vminit/fetcher.gz"
+    destination = "/var/tmp/fetcher.gz"
   }
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"loadgen\" \"loadgen${count.index}\" \"${self.private_ip}\"",
     ]
   }
 }
 
 // Monitoring VM (for Prometheus and Grafana)
 resource "aws_instance" "mon" {
-  // Disable for now, while we're still testing the cluster.
   count = 1
 
   ami                         = data.aws_ami.image.id
@@ -154,10 +150,34 @@ resource "aws_instance" "mon" {
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.primary.id
 
   tags = {
     Project = "crdb_exploration"
     Name    = "crdb_exploration_mon_${count.index}"
+  }
+
+  connection {
+    type = "ssh"
+    user = "root"
+    host = self.public_ip
+  }
+
+  // See "db" instances.
+  provisioner "file" {
+    source      = "../vminit/vminit.sh"
+    destination = "/var/tmp/vminit.sh"
+  }
+
+  provisioner "file" {
+    source      = "../vminit/fetcher.gz"
+    destination = "/var/tmp/fetcher.gz"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "bash -x /var/tmp/vminit.sh \"mon\" \"mon${count.index}\" \"${self.private_ip}\"",
+    ]
   }
 }
 

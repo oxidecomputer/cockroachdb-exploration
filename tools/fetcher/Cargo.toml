@@ -1,0 +1,16 @@
+[package]
+name = "fetcher"
+version = "0.1.0"
+authors = ["David Pacheco <dap@oxidecomputer.com>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.0"
+env_logger = "0.7.1"
+rusoto_core = "0.45.0"
+rusoto_credential = "0.45.0"
+rusoto_s3 = "0.45.0"
+
+[dependencies.tokio]
+version = "0.2.22"
+features = [ "io-std" ]
