@@ -15,9 +15,6 @@ Plan (again, see RFD 53):
 
 * Go through some basic docs:
 ** Tutorials, starting with https://www.cockroachlabs.com/docs/v20.1/demo-replication-and-rebalancing.html[Replication and rebalancing]
-* Set up monitoring
-** Prometheus, including aggregation, alert rules ** Grafana
-* Set up haproxy
 * Basic testing
 ** Look at 'SHOW RANGES FROM TABLE ... '
 ** Look at 'SHOW RANGES FROM INDEX ... '
@@ -58,8 +55,9 @@ To deploy a cluster, you need to have:
 
 - terraform configured using your AWS account
 - an ssh key configured in AWS called "dap-terraform" OR change locals.ssh_key_name in terraform/nodes.tf to refer to your key's name
+- a bunch of binaries downloaded by hand into this repo.  There's not a great way to assemble this yet, but .gitignore can tell you what they are and where they go.
 
-You will first need to construct the tarball used on each host.  This is not yet automated.  Do it with:
+**With those prerequisites in place**, you can construct the tarball to be used on each host:
 
 [source,text]
 ----
@@ -67,7 +65,14 @@ $ cd vminit
 $ make
 ----
 
-But you need several binaries that are not in this repo for practical reasons.
+Then upload these to the S3 bucket:
+
+[source,text]
+----
+$ aws s3 cp vminit-common.tgz s3://oxide-cockroachdb-exploration/vminit-common.tgz
+$ aws s3 cp vminit-cockroachdb.tgz s3://oxide-cockroachdb-exploration/vminit-cockroachdb.tgz
+$ aws s3 cp vminit-mon.tgz s3://oxide-cockroachdb-exploration/vminit-mon.tgz
+----
 
 Then use terraform to deploy the cluster:
 
@@ -77,7 +82,13 @@ $ cd terraform
 $ terraform apply
 ----
 
-This will emit the public IPs of the database nodes and the load generator.  Log into any one of those and run `cockroach init --insecure --host=INTERNAL_IP_OF_ANY_OF_THE_NODES`.
+This will emit the public and private IPs of all the nodes in the cluster.  Note the private IP address of any of the database nodes, then log into the load generator and run:
+
+[source,text]
+----
+$ ssh root@$LOADGEN_PUBLIC_IP
+$ configure_cluster --host DB_PRIVATE_IP
+----
 
 == Planning notes
 

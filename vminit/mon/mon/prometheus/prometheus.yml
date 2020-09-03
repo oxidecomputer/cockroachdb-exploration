@@ -29,3 +29,12 @@ scrape_configs:
     scrape_timeout: 5s
     static_configs:
       - targets: [ 'localhost:3000' ]
+
+  - job_name: 'haproxy'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    ec2_sd_configs:
+      - port: 8404
+        filters:
+          - name: 'tag:Role'
+            values: [ 'crdb_exploration_loadgen' ]

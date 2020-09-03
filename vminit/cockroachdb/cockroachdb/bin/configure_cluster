@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#
+# One-time initial configuration of the CockroachDB cluster.  This runs
+# "cockroach init" and configures haproxy in the load generator instance.
+#
+
+set -o xtrace
+set -o errexit
+set -o pipefail
+
+function fail
+{
+	echo "$arg0: $@" >&2
+	exit 1
+}
+
+arg0="$(basename ${BASH_SOURCE[0]})"
+CC_ROOT="$(cd "$(dirname ${BASH_SOURCE[0]})" && pwd)"
+
+[[ -n "$@" ]] || fail "expected arguments for \"cockroach init\""
+
+/cockroachdb/bin/cockroach init "$@" || \
+    fail "failed to initialize CockroachDB cluster"
+/cockroachdb/bin/configure_haproxy "$@"

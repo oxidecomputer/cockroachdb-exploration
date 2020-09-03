@@ -1,0 +1,26 @@
+#!/bin/bash
+
+#
+# Configures haproxy in this VM to proxy to our CockroachDB cluster.  We expect
+# this only to be run once at cluster setup, but it can be rerun as needed.
+#
+
+set -o xtrace
+set -o errexit
+set -o pipefail
+
+function fail
+{
+	echo "$arg0: $@" >&2
+	exit 1
+}
+
+arg0="$(basename ${BASH_SOURCE[0]})"
+CC_ROOT="$(cd "$(dirname ${BASH_SOURCE[0]})" && pwd)"
+
+[[ -n "$@" ]] || fail "expected arguments for \"cockroach init\""
+
+/cockroachdb/bin/cockroach gen haproxy \
+    --out /cockroachdb/etc/haproxy_cockroachdb.cfg "$@"
+svcadm disable -s haproxy
+svcadm enable -s haproxy

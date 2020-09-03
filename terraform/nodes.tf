@@ -113,6 +113,7 @@ resource "aws_instance" "loadgen" {
 
   tags = {
     Project = "crdb_exploration"
+    Role    = "crdb_exploration_loadgen"
     Name    = "crdb_exploration_loadgen_${count.index}"
   }
 

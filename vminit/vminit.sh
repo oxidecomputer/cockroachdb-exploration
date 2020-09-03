@@ -81,12 +81,16 @@ chmod +x /var/tmp/fetcher
     > /var/tmp/vminit-$VMI_EXTRA_TARBALL.tgz
 
 #
-# Update the hostname.
-# TODO we need to update the DHCP hostname for this to work after a subsequent
-# reboot (and once we do, we probably don't need this).
+# Update the hostname, in three parts:
+# (1) The hostname(1) command updates it now.
+# (2) The update of /etc/nodename causes this name to persist across reboots.
+# (3) The update of /etc/default/dhcpagent causes /etc/nodename NOT to be
+#     clobbered by the DHCP "Hostname" parameter.
 # TODO it would be helpful to put the private IP in the bash prompt, too.
 #
 hostname "$VMI_ALIAS"
+echo "$VMI_ALIAS" > /etc/nodename
+/usr/bin/sed -i '/^PARAM_IGNORE_LIST=/s/=.*/=12/' /etc/default/dhcpagent
 
 # Set up filesystems and users.
 zfs create -o mountpoint=/export/home rpool/home
@@ -125,4 +129,30 @@ elif [[ $VMI_ROLE == "db" ]]; then
 	svccfg import /cockroachdb/smf/cockroachdb.xml
 	svccfg -s cockroachdb setprop config/my_internal_ip = "$VMI_IP"
 	svcadm refresh cockroachdb:default
+elif [[ $VMI_ROLE == "loadgen" ]]; then
+	#
+	# Set up haproxy, which will function as client-side load balancing for
+	# our cluster.  This will not configure or enable the service -- that
+	# can only happen once the cluster has been initialized, once everything
+	# has been deployed.
+	#
+	svccfg import /cockroachdb/smf/haproxy.xml
+
+	#
+	# Additionally, set up root's and cockroachdb's environment so that our
+	# tools are on the path and so that cockroachdb connection parameters
+	# are available.
+	#
+	# It's a little dicey to have root's profile include some other user's
+	# environment file.  In this specific instance, we're really in the same
+	# trust domain.
+	#
+	cat >> /cockroachdb/etc/environment <<-EOF
+	export COCKROACH_HOST="$VMI_IP"
+	export COCKROACH_INSECURE=true
+	export PATH="\$PATH:/cockroachdb/bin"
+	EOF
+	echo "source /cockroachdb/etc/environment" >> ~root/.profile
+	echo "source /cockroachdb/etc/environment" >> ~cockroachdb/.profile
+	chown cockroachdb /cockroachdb/etc/environment ~cockroachdb/.profile
 fi
