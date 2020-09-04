@@ -47,6 +47,7 @@ Plan (again, see RFD 53):
 * Debugging known pathologies
 ** e.g., a range that needs to be split using https://www.cockroachlabs.com/docs/v20.1/split-at[split-at] because of load
 * Lower priority:
+** Clocks going backwards?
 ** Go through https://www.cockroachlabs.com/docs/v20.1/performance.html[perf tuning exercises] in detail
 
 == Usage synopsis
