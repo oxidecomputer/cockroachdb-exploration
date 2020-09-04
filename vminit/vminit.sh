@@ -106,6 +106,9 @@ chown -R "$VMI_USER" "/$VMI_DSNAME"
 svcadm disable -s ntp
 svccfg import /opt/oxide/smf/chrony.xml
 
+# Configure node_exporter
+svccfg import /opt/oxide/smf/node-exporter.xml
+
 # Apply role-specific configuration.
 if [[ $VMI_ROLE == "mon" ]]; then
 	#

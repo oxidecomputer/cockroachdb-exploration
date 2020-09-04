@@ -155,6 +155,7 @@ resource "aws_instance" "mon" {
 
   tags = {
     Project = "crdb_exploration"
+    Role    = "crdb_exploration_mon"
     Name    = "crdb_exploration_mon_${count.index}"
   }
 

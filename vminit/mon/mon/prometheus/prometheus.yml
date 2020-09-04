@@ -38,3 +38,18 @@ scrape_configs:
         filters:
           - name: 'tag:Role'
             values: [ 'crdb_exploration_loadgen' ]
+
+  - job_name: 'vm_metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    ec2_sd_configs:
+      - port: 9100
+        filters:
+          - name: 'tag:Project'
+            values: [ 'crdb_exploration' ]
+
+    relabel_configs:
+    - source_labels: [ __meta_ec2_tag_Role ]
+      target_label: 'role'
+    - source_labels: [ __meta_ec2_tag_Name ]
+      target_label: 'vmname'

@@ -340,3 +340,7 @@ Working to automate the deployment of Prometheus and Grafana to a dev zone.  Thi
 * various improvements:
 ** more useful hostnames for VMs (though this is not currently persistent)
 ** created "env.sh" file with various useful aliases
+
+== 2020-09-04
+
+* added Prometheus node_exporter (see [prometheus/node_exporter#1836](https://github.com/prometheus/node_exporter/issues/1836))

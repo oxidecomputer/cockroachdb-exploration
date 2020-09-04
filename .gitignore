@@ -8,6 +8,7 @@ vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1
 vminit/cockroachdb/cockroachdb/lib/libstdc++.so.6
 vminit/common/opt/oxide/bin/chronyc
 vminit/common/opt/oxide/sbin/chronyd
+vminit/common/opt/oxide/sbin/node_exporter
 vminit/common/opt/oxide/share/man/man1/chronyc.1
 vminit/common/opt/oxide/share/man/man5/chrony.conf.5
 vminit/common/opt/oxide/share/man/man8/chronyd.8
