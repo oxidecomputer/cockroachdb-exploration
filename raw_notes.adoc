@@ -344,3 +344,6 @@ Working to automate the deployment of Prometheus and Grafana to a dev zone.  Thi
 == 2020-09-04
 
 * added Prometheus node_exporter (see [prometheus/node_exporter#1836](https://github.com/prometheus/node_exporter/issues/1836))
+* built out a Grafana dashboard to show key metrics.  Discovered [prometheus/node_exporter#1837](https://github.com/prometheus/node_exporter/issues/1837).
+
+Still, I think I'm just about ready to do some more serious testing.
