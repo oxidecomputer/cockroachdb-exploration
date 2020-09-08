@@ -347,3 +347,402 @@ Working to automate the deployment of Prometheus and Grafana to a dev zone.  Thi
 * built out a Grafana dashboard to show key metrics.  Discovered [prometheus/node_exporter#1837](https://github.com/prometheus/node_exporter/issues/1837).
 
 Still, I think I'm just about ready to do some more serious testing.
+
+== 2020-09-08
+
+Summary:
+
+* Switched to Joshua's OmniOS image running his metadata agent: AMI
+  `ami-012f34b61b75182e8`.
+* Updated Terraform config to deploy much larger root disks.
+* Spent some time automating disk and zpool expansion to match provisioned size before realizing that Josh's image already does this.
+* Recreated dashboard from Friday
+* Ran a bunch of tests:
+** ycsb workload: increasing levels of concurrency
+** The workload appeared largely bottlenecked on one db node, so I went to experiment with a much larger DB and adding splits.
+** I ran into a lot of different errors trying to make this work.  I'm not sure what the root cause really was except stuff being really busy?
+** The "kv" workload might be easier to run and just as useful a next step.
+
+Around 9am PT, ran:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=1 --drop --histograms histograms-ycsbA-c=1-"$(date +%FT%TZ)".out --tolerate-errors --workload A
+----
+
+I let this run for an hour.
+
+Around 1pm PT, I ran:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=1 --drop --histograms histograms-ycsbA-c=1-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+Around 1:16PM, I'm running:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=2 --drop --histograms histograms-ycsbA-c=2-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+Around 1:23PM, I'm running:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=4 --drop --histograms histograms-ycsbA-c=4-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+Around 1:34PM, I'm running:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=8 --drop --histograms histograms-ycsbA-c=8-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+Around 1:42PM, I'm running:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=16 --drop --histograms histograms-ycsbA-c=16-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+At this point, db0 CPUs exceeded 90% CPU utilization.  It's busier than all the other nodes, by a lot.  Let's see what happens if we go further.
+
+Around 1:51PM:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=32 --drop --histograms histograms-ycsbA-c=32-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+It's actually degraded okay at this point, by which I mean that throughput did actually increase and p95/p99 didn't get extremely bad.  I note that in the CRDB Admin UI, nearly all of the queries have hit the "n1" store today.  Only during this last workload did we see any queries hit another store, and it was n3.  Maybe CRDB is dynamically splitting by load?
+
+Note that during this workload is where we start seeing replica errors and more "not leaseholder" errors than before.
+
+Digging further into AdminUI, this database is only 128 MiB, with 4 ranges.  It's not shocking that it's not that distributed.
+
+What if we go further?
+
+At 1:58PM PT:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=64 --drop --histograms histograms-ycsbA-c=64-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+The results look similar to the previous one.  Throughput is less consistent, but hasn't gotten below the point where it was previously consistent.  We did seem to see some SQL 'exec_error's, but I don't see them in the client.  This graph in Grafana also doesn't seem totally consistent with the one in CockroachDB's Admin UI.  It's correlated, though.
+
+Why not go further and see how this goes?
+
+At 2:08 PM PT:
+
+[source,text]
+----
+$ cockroach workload run ycsb --concurrency=128 --drop --histograms histograms-ycsbA-c=128-"$(date +%FT%TZ)".out --tolerate-errors --workload A --duration 5m
+----
+
+This one definitely saw spikes in SQL "exec_error", and potentially worse throughput than the previous one.  All db nodes are pretty tapped at this point.
+
+I want to see what happens with this workload if I tune up the split count and total row count, since it seems pretty pokey right now.  I'm going to go back to concurrency 16, which is one step past 8, which was the stablest and most consistent.
+
+[source,text]
+----
+$ cockroach workload init ycsb --splits 8 --concurrency=16 --drop --insert-count=1000000 --workload A
+$ cockroach workload  run ycsb --splits 8 --concurrency=16 --drop --insert-count=1000000 --workload A --histograms histograms-ycsbA-c=16-"$(date +%FT%TZ)".out --tolerate-errors --duration 1h
+----
+
+The loading step is taking quite a while.  It's hammering both CPUs on one database node (so, concurrency=1, I guess)?
+
+While this was going on, I was able to:
+
+[source,text]
+----
+root@192.168.1.118:26257/ycsb> select count(*) from usertable;
+  count
+----------
+  438000
+(1 row)
+
+Time: 51.558088946s
+----
+
+But when I tried this later, I got a strange error:
+
+[source,text]
+----
+root@192.168.1.118:26257/ycsb> select count(*) from usertable;
+ERROR: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+root@192.168.1.118:26257/ycsb>
+----
+
+I'm not sure which host I was connected to.  I checked all three logs but didn't see anything obvious.
+
+The `init` command failed after 20 minutes with:
+
+[source,text]
+----
+cockroachdb@loadgen0:~$ time cockroach workload init ycsb --splits 8 --concurrency=16 --drop --insert-count=1000000 --workload A
+Error: failed insert into usertable: pq: split failed while applying backpressure to [txn: 4705c25f], ConditionalPut [/Table/81/1/"user4211402063788639270"/0,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/1/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/2/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/3/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/4/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/5/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/6/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/7/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/8/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/9/1,/Min), ConditionalPut [/Table/81/1/"user4211402063788639270"/10/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/0,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/1/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/2/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/3/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/4/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/5/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/6/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/7/1,/Min), ConditionalPut [/Table/81/1/"user8166519625965030401"/8/1,/Min), ... 10976 skipped ..., ConditionalPut [/Table/81/1/"user6890362626482376666"/7/1,/Min), ConditionalPut [/Table/81/1/"user6890362626482376666"/8/1,/Min), ConditionalPut [/Table/81/1/"user6890362626482376666"/9/1,/Min), ConditionalPut [/Table/81/1/"user6890362626482376666"/10/1,/Min), EndTxn(commit:true tsflex:true) [/Table/81/1/"user4211402063788639270"/0]  on range r101:/{Table/81-Max} [(n1,s1):1, (n2,s2):2, (n3,s3):3, next=4, gen=42]: operation "split queue process replica 101" timed out after 1m0s: split at key /Table/81/1/"user1430647350823960411" failed: context deadline exceeded
+
+real    19m28.125s
+user    0m15.002s
+sys     0m2.580s
+----
+
+Amusing sideshow:
+
+[source,text]
+----
+root@192.168.1.118:26257/ycsb> select count(*) from usertable;
+invalid syntax: statement ignored: unexpected error: read tcp 192.168.1.118:54604->192.168.1.118:26257: read: connection reset by peer
+warning: error retrieving the transaction status: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+root@192.168.1.118:26257/ycsb ?>
+----
+
+But ultimate it had created 714,000 rows:
+
+[source,text]
+----
+select count(*) from usertable;
+  count
+----------
+  714000
+(1 row)
+
+Time: 12.48402931s
+----
+
+Details on that https://www.cockroachlabs.com/docs/stable/common-errors.html#context-deadline-exceeded[context deadline exceeded] error.
+
+The database is at least 4 GiB now, although ycsb is only 1.6 GiB (maybe that's logical?)
+
+The database is at least 4 GiB now, although ycsb is only 1.6 GiB (maybe that's logical?).  There's only one range, though.
+
+Resuming with:
+
+[source,text]
+----
+$ time cockroach workload init ycsb --splits 8 --concurrency=16 --insert-start 714000 --insert-count=1000000 --workload A
+----
+
+I realized that isn't right -- the insert count needs to be adjusted.  Tried to get a new count and got:
+
+[source,text]
+----
+root@192.168.1.118:26257/ycsb> select count(*) from usertable;
+ERROR: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+----
+
+This is repeatable.  Is this an haproxy timeout?  I didn't reproduce it (one time) hitting a CRDB node directly.
+
+So now:
+
+[source,text]
+----
+$ time cockroach workload init ycsb --splits 8 --concurrency=16 --insert-start 714000 --insert-count=286000 --workload A
+Error: failed insert into usertable: pq: duplicate key value (ycsb_key)=('user10357802244052365217') violates unique constraint "primary"
+
+real    1m7.990s
+user    0m0.787s
+sys     0m0.831s
+----
+
+Yeesh.
+
+I'm seeing this repeatedly now, even when I bump the count up.  When I bumped it way up:
+
+[source,text]
+----
+cockroachdb@loadgen0:~$ time cockroach workload init ycsb --splits 8 --concurrency=16 --insert-start 800000 --insert-count=200000 --workload A
+Error: failed insert into usertable: driver: bad connection
+
+real    3m1.377s
+user    0m1.018s
+sys     0m0.641s
+----
+
+I'm going to try without going through haproxy.
+
+[source,text]
+----
+$ time cockroach workload init ycsb --splits 8 --concurrency=16 --insert-start 900000 --insert-count=100000 --workload A postgresql://root@192.168.1.104:26257/ycsb?sslmode=disable
+----
+
+This ultimately failed with another constraint violation error.  There are now 721,000 rows in `usertable`.
+
+For kicks, I'm going to start the above workload anyway to see how it goes.  Tomorrow, I'll probably reset and do the "kv" workload.  This should have a few advantages because it doesn't do so much work during the "init" phase.  That's good because this phase is harder to observe and not parallelized, as far as I can tell.
+
+It may still be worth digging into the ycsb issues to better understand how things fail when they go wrong.  It would be good to better understand what SQL it's running (how many rows is it trying to insert at once?), with what concurrency, how long those INSERTs are taking, etc.
+
+I realized as I started this that I wasn't sure the splits had been applied.  So I'll run this:
+
+[source,text]
+----
+$ time cockroach workload init ycsb --splits 8 --concurrency=16 --insert-count=0 --workload A
+I200908 22:38:20.458190 1 workload/workloadsql/workloadsql.go:113  starting 8 splits
+
+real    0m1.885s
+user    0m0.106s
+sys     0m0.058s
+$ cockroach workload  run ycsb --splits 8 --concurrency=16 --workload A --histograms histograms-ycsbA-c=16-"$(date +%FT%TZ)".out --tolerate-errors --duration 1h
+----
+
+Incidentally, this command's documentation is rather confused.  Some of these (like `--splits`) apply at init time, but that's not clear.  Other things are just documented wrong (`--insert-start` vs. `--initial-count`).
+
+A few minutes into this workload (around 3:47pm PT), the Grafana metrics tanked.  Activity went to zero, CPU utilization is no longer reported.  All services in all VMs appear to be running as normal.  The workload is reporting a bunch of successful operations per second!
+
+It looks like the "mon" zone ran out of disk space.  It's still got a 2 GiB disk for some reason, even though the disk is 10 GiB.  The other nodes had this problem earlier, and rebooting fixed it because Joshua's image automatically expands the pool to match the physical size.  Maybe I forgot to reboot this one?  Anyway, I made the mistake of trying to fix this by rebooting it.  I doubt this will work because it probably won't be able to come up with 0 bytes available.  I may have to redeploy this VM, in which case I'll have lost today's testing data.  I do have screenshots and the client-side data, if it's really important.  It's also presumably reproducible.
+
+I redeployed this zone (having saved the dashboard JSON!).  As the workload is running now (see above): CPU utilization is high for all CPUs on all db nodes (77%-90%).  db1 is a little lower -- closer to the 77% level.  Queries aren't perfectly distributed across the nodes, but it's not bad.  Average throughput is about 1K selects + 1K updates per second, which is a little less than c=16 earlier today, but the database is much bigger now.
+
+Throughput dropped to zero for a while and spat this out:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 2101.0s        0         1157.6         1059.4      3.3      7.3     13.1     21.0 read
+ 2101.0s        0         1139.6         1058.5     10.0     17.8     28.3     46.1 update
+ 2102.0s        0         1123.4         1059.4      3.4      7.9     18.9     28.3 read
+ 2102.0s        0         1092.3         1058.6     10.5     18.9     33.6     52.4 update
+ 2103.0s        0         1117.0         1059.5      3.3      6.8     15.7     37.7 read
+ 2103.0s        0         1117.0         1058.6     10.0     19.9     28.3     35.7 update
+ 2104.0s        0         1229.1         1059.5      3.5      6.8     11.0     23.1 read
+ 2104.0s        0         1145.1         1058.6     10.0     16.3     24.1     30.4 update
+ 2105.0s        0         1192.1         1059.6      3.4      8.4     14.2     26.2 read
+ 2105.0s        0         1083.1         1058.6     10.0     19.9     29.4     39.8 update
+ 2106.0s        0         1160.1         1059.6      3.4      7.1     14.2     26.2 read
+ 2106.0s        0         1146.1         1058.7     10.0     17.8     26.2     35.7 update
+ 2107.0s        0         1131.9         1059.7      3.4      7.6     13.6     27.3 read
+ 2107.0s        0         1129.9         1058.7     10.0     18.9     28.3     35.7 update
+ 2108.0s        0         1142.0         1059.7      3.4      8.1     14.2     35.7 read
+ 2108.0s        0         1120.0         1058.7     10.0     18.9     26.2     39.8 update
+ 2109.0s        0         1155.2         1059.8      3.4      7.1     10.5     21.0 read
+ 2109.0s        0         1207.2         1058.8     10.0     16.3     21.0     31.5 update
+ 2110.0s        0         1154.4         1059.8      3.4      8.4     16.3     23.1 read
+ 2110.0s        0         1056.4         1058.8     10.0     21.0     32.5     48.2 update
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 2111.0s        0         1134.6         1059.8      3.3      6.8     17.8     35.7 read
+ 2111.0s        0         1124.6         1058.8     10.0     17.8     28.3     60.8 update
+ 2112.0s        0            0.0         1059.3      0.0      0.0      0.0      0.0 read
+ 2112.0s        0            0.0         1058.3      0.0      0.0      0.0      0.0 update
+ 2113.0s        0            0.0         1058.8      0.0      0.0      0.0      0.0 read
+ 2113.0s        0            0.0         1057.8      0.0      0.0      0.0      0.0 update
+ 2114.0s        0            0.0         1058.3      0.0      0.0      0.0      0.0 read
+ 2114.0s        0            0.0         1057.3      0.0      0.0      0.0      0.0 update
+ 2115.0s        0            0.0         1057.8      0.0      0.0      0.0      0.0 read
+ 2115.0s        0            0.0         1056.8      0.0      0.0      0.0      0.0 update
+ 2116.0s        0            0.0         1057.3      0.0      0.0      0.0      0.0 read
+ 2116.0s        0            0.0         1056.3      0.0      0.0      0.0      0.0 update
+ 2117.0s        0            0.0         1056.8      0.0      0.0      0.0      0.0 read
+ 2117.0s        0            0.0         1055.8      0.0      0.0      0.0      0.0 update
+ 2118.0s        0            0.0         1056.3      0.0      0.0      0.0      0.0 read
+ 2118.0s        0            0.0         1055.3      0.0      0.0      0.0      0.0 update
+ 2119.0s        0            0.0         1055.8      0.0      0.0      0.0      0.0 read
+ 2119.0s        0            0.0         1054.8      0.0      0.0      0.0      0.0 update
+ 2120.0s        0            0.0         1055.3      0.0      0.0      0.0      0.0 read
+ 2120.0s        0            0.0         1054.3      0.0      0.0      0.0      0.0 update
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 2121.0s        0            0.0         1054.8      0.0      0.0      0.0      0.0 read
+ 2121.0s        0            0.0         1053.8      0.0      0.0      0.0      0.0 update
+ 2122.0s        0            0.0         1054.4      0.0      0.0      0.0      0.0 read
+ 2122.0s        0            0.0         1053.3      0.0      0.0      0.0      0.0 update
+ 2123.0s        0            0.0         1053.9      0.0      0.0      0.0      0.0 read
+ 2123.0s        0            0.0         1052.9      0.0      0.0      0.0      0.0 update
+ 2124.0s        0            0.0         1053.4      0.0      0.0      0.0      0.0 read
+ 2124.0s        0            0.0         1052.4      0.0      0.0      0.0      0.0 update
+ 2125.0s        0            0.0         1052.9      0.0      0.0      0.0      0.0 read
+ 2125.0s        0            0.0         1051.9      0.0      0.0      0.0      0.0 update
+ 2126.0s        0            0.0         1052.4      0.0      0.0      0.0      0.0 read
+ 2126.0s        0            0.0         1051.4      0.0      0.0      0.0      0.0 update
+ 2127.0s        0            0.0         1051.9      0.0      0.0      0.0      0.0 read
+ 2127.0s        0            0.0         1050.9      0.0      0.0      0.0      0.0 update
+ 2128.0s        0            0.0         1051.4      0.0      0.0      0.0      0.0 read
+ 2128.0s        0            0.0         1050.4      0.0      0.0      0.0      0.0 update
+ 2129.0s        0            0.0         1050.9      0.0      0.0      0.0      0.0 read
+ 2129.0s        0            0.0         1049.9      0.0      0.0      0.0      0.0 update
+ 2130.0s        0            0.0         1050.4      0.0      0.0      0.0      0.0 read
+ 2130.0s        0            0.0         1049.4      0.0      0.0      0.0      0.0 update
+E200908 23:14:11.770407 1 workload/cli/run.go:445  pq: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [propagate])
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 2131.0s        1            0.0         1049.9      0.0      0.0      0.0      0.0 read
+ 2131.0s        1            0.0         1048.9      0.0      0.0      0.0      0.0 update
+ 2132.0s        3          745.8         1049.8      3.3      7.1     12.6  20401.1 read
+ 2132.0s        3          772.8         1048.8     10.0     18.9     27.3  20401.1 update
+ 2133.0s        3          836.1         1049.7      3.0      6.3      8.9     12.1 read
+ 2133.0s        3          864.1         1048.7      9.4     16.3     28.3     35.7 update
+ 2134.0s        3          815.0         1049.5      3.1      6.6     11.5     26.2 read
+ 2134.0s        3          808.0         1048.6      9.4     18.9     33.6  22548.6 update
+ 2135.0s        3          879.2         1049.5      3.0      6.6      8.9     13.1 read
+ 2135.0s        3          854.1         1048.5      9.4     14.7     22.0     37.7 update
+ 2136.0s        3          856.1         1049.4      3.1      6.3      7.6     12.1 read
+ 2136.0s        3          849.1         1048.4      9.4     16.3     23.1     27.3 update
+ 2137.0s        3          834.9         1049.3      3.0      6.6     11.0     13.6 read
+ 2137.0s        3          805.9         1048.3     10.0     17.8     24.1     30.4 update
+ 2138.0s        3          930.8         1049.2      3.1      6.3     10.5     18.9 read
+ 2138.0s        3          864.8         1048.2      8.9     14.7     21.0     29.4 update
+ 2139.0s        3          829.2         1049.1      2.9      6.0     10.0     62.9 read
+ 2139.0s        3          875.2         1048.1      9.4     16.3     21.0     32.5 update
+ 2140.0s        3          833.7         1049.0      3.0      6.8      9.4     21.0 read
+ 2140.0s        3          840.7         1048.0      9.4     17.8     23.1     31.5 update
+----
+
+Another one I saw was:
+
+[source,text]
+----
+E200908 23:15:23.487617 1 workload/cli/run.go:445  pq: result is ambiguous (error=unable to dial n1: breaker open [exhausted])
+----
+
+Maybe I'm running too close to saturation?  Until this point, p95 latency was very steady around 18ms across all three nodes.  p99 was very steady at around 30ms across all three nodes.  Now the thing is falling apart.  I wonder if this would work better with three different load generator instances (processes, not VMs) instead of haproxy?  But these look like internal errors.
+
+
+A few minutes later, the workload has recovered to where it was before.  It seems like we triggered a crash?  But the uptime on all of them shows 6 hours.  That said, there was a loss of connections to .236 and a bunch of ranges reported being uner-replicated for a minute.  CockroachDB did not actually restart on that node.  I do see some errors in the logs:
+
+[source,text]
+----
+W200908 23:15:19.027322 198 kv/kvserver/node_liveness.go:592  [n3,liveness-hb] failed node liveness heartbeat: oper
+ation "node liveness heartbeat" timed out after 4.5s
+(1) operation "node liveness heartbeat" timed out after 4.5s
+Wraps: (2) context deadline exceeded
+Error types: (1) *contextutil.TimeoutError (2) context.deadlineExceededError
+
+An inability to maintain liveness will prevent a node from participating in a
+cluster. If this problem persists, it may be a sign of resource starvation or
+of network connectivity problems. For help troubleshooting, visit:
+
+    https://www.cockroachlabs.com/docs/stable/cluster-setup-troubleshooting.html#node-liveness-issues
+
+...
+
+I200908 23:15:19.062947 196 server/status/runtime.go:504  [n3] runtime stats: 0 B RSS, 242 goroutines, 108 MiB/1004
+ MiB/269 MiB GO alloc/idle/total, 174 MiB/221 MiB CGO alloc/total, 187.1 CGO/sec, 0.0/0.0 %(u/s)time, 0.0 %gc (1x),
+ 0 B/0 B (r/w)net
+W200908 23:15:19.482447 98 kv/kvserver/closedts/provider/provider.go:155  [ct-closer] unable to move closed timesta
+mp forward: not live
+(1) attached stack trace
+  | github.com/cockroachdb/cockroach/pkg/kv/kvserver.init
+  |     /ws/cockroach/gopath/src/github.com/cockroachdb/cockroach/pkg/kv/kvserver/node_liveness.go:60
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5420
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.doInit
+  |     /opt/go/1.14.4/src/runtime/proc.go:5415
+  | runtime.main
+  |     /opt/go/1.14.4/src/runtime/proc.go:190
+  | runtime.goexit
+  |     /opt/go/1.14.4/src/runtime/asm_amd64.s:1373
+Wraps: (2) not live
+Error types: (1) *withstack.withStack (2) *errors.errorString
+----

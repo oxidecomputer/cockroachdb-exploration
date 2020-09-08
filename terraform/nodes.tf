@@ -11,30 +11,37 @@ locals {
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
+
+  ami = "ami-012f34b61b75182e8"
 }
 
 // Grab the latest OmniOS image.
-data "aws_ami" "image" {
-  owners      = ["313551840421"]
-  most_recent = true
-
-  filter {
-    name   = "name"
-    values = ["*OmniOS*"]
-  }
-}
+//data "aws_ami" "image" {
+//  owners      = ["313551840421"]
+//  most_recent = true
+//
+//  filter {
+//    name   = "name"
+//    values = ["*OmniOS*"]
+//  }
+//}
 
 // CockroachDB cluster nodes
 resource "aws_instance" "db" {
   count = local.ndbs
 
-  ami                         = data.aws_ami.image.id
+  // ami                         = data.aws_ami.image.id
+  ami                         = local.ami
   instance_type               = local.db_instance_type
   key_name                    = local.ssh_key_name
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.primary.id
+
+  root_block_device {
+    volume_size = 60
+  }
 
   tags = {
     Project = "crdb_exploration"
@@ -103,13 +110,18 @@ resource "null_resource" "cluster_config" {
 resource "aws_instance" "loadgen" {
   count = 1
 
-  ami                         = data.aws_ami.image.id
+  // ami                         = data.aws_ami.image.id
+  ami                         = local.ami
   instance_type               = local.loadgen_instance_type
   key_name                    = local.ssh_key_name
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.primary.id
+
+  root_block_device {
+    volume_size = 10
+  }
 
   tags = {
     Project = "crdb_exploration"
@@ -145,13 +157,18 @@ resource "aws_instance" "loadgen" {
 resource "aws_instance" "mon" {
   count = 1
 
-  ami                         = data.aws_ami.image.id
+  // ami                         = data.aws_ami.image.id
+  ami                         = local.ami
   instance_type               = local.mon_instance_type
   key_name                    = local.ssh_key_name
   subnet_id                   = aws_subnet.crdb_exploration.id
   vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.primary.id
+
+  root_block_device {
+    volume_size = 10
+  }
 
   tags = {
     Project = "crdb_exploration"
