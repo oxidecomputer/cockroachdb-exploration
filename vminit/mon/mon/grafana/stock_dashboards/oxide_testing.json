@@ -16,7 +16,7 @@
   "gnetId": null,
   "graphTooltip": 1,
   "id": 8,
-  "iteration": 1599606411914,
+  "iteration": 1599663642750,
   "links": [
     {
       "$$hashKey": "object:784",
@@ -694,13 +694,107 @@
       }
     },
     {
+      "aliasColors": {},
+      "bars": true,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "hiddenSeries": false,
+      "id": 55,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": false,
+        "total": false,
+        "values": false
+      },
+      "lines": false,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "percentage": false,
+      "pluginVersion": "7.1.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "SUM(sql_distsql_queries_active)",
+          "interval": "",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "CockroachDB active queries (distributed SQL)",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "$$hashKey": "object:1753",
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "$$hashKey": "object:1754",
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
       "collapsed": false,
       "datasource": null,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "id": 53,
       "panels": [],
@@ -725,7 +819,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 45
       },
       "hiddenSeries": false,
       "id": 50,
@@ -820,7 +914,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 45
       },
       "hiddenSeries": false,
       "id": 51,
@@ -958,7 +1052,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "id": 30,
       "panels": [],
@@ -992,7 +1086,7 @@
         "h": 7,
         "w": 2,
         "x": 0,
-        "y": 46
+        "y": 54
       },
       "id": 41,
       "options": {
@@ -1041,7 +1135,7 @@
         "h": 7,
         "w": 5,
         "x": 2,
-        "y": 46
+        "y": 54
       },
       "id": 13,
       "links": [],
@@ -1098,7 +1192,7 @@
         "h": 7,
         "w": 7,
         "x": 7,
-        "y": 46
+        "y": 54
       },
       "hiddenSeries": false,
       "id": 28,
@@ -1203,7 +1297,7 @@
         "h": 7,
         "w": 7,
         "x": 14,
-        "y": 46
+        "y": 54
       },
       "hiddenSeries": false,
       "id": 14,
@@ -1321,7 +1415,7 @@
         "h": 9,
         "w": 10,
         "x": 0,
-        "y": 53
+        "y": 61
       },
       "hiddenSeries": false,
       "id": 45,
@@ -1455,7 +1549,7 @@
         "h": 9,
         "w": 9,
         "x": 10,
-        "y": 53
+        "y": 61
       },
       "hiddenSeries": false,
       "id": 46,
@@ -1593,7 +1687,7 @@
         "h": 9,
         "w": 10,
         "x": 0,
-        "y": 62
+        "y": 70
       },
       "hiddenSeries": false,
       "id": 20,
@@ -1692,7 +1786,7 @@
         "h": 9,
         "w": 9,
         "x": 10,
-        "y": 62
+        "y": 70
       },
       "hiddenSeries": false,
       "id": 22,
@@ -1791,7 +1885,7 @@
         "h": 9,
         "w": 10,
         "x": 0,
-        "y": 71
+        "y": 79
       },
       "hiddenSeries": false,
       "id": 24,
@@ -1890,7 +1984,7 @@
         "h": 9,
         "w": 9,
         "x": 10,
-        "y": 71
+        "y": 79
       },
       "hiddenSeries": false,
       "id": 26,
@@ -1986,10 +2080,10 @@
       "fill": 0,
       "fillGradient": 0,
       "gridPos": {
-        "h": 10,
-        "w": 24,
+        "h": 15,
+        "w": 10,
         "x": 0,
-        "y": 80
+        "y": 88
       },
       "hiddenSeries": false,
       "id": 48,
@@ -1999,7 +2093,7 @@
         "current": false,
         "max": true,
         "min": true,
-        "rightSide": true,
+        "rightSide": false,
         "show": true,
         "total": false,
         "values": true
@@ -2104,6 +2198,133 @@
         {
           "$$hashKey": "object:3963",
           "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 15,
+        "w": 9,
+        "x": 10,
+        "y": 88
+      },
+      "hiddenSeries": false,
+      "id": 57,
+      "legend": {
+        "alignAsTable": true,
+        "avg": true,
+        "current": false,
+        "max": true,
+        "min": true,
+        "show": true,
+        "total": false,
+        "values": true
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "percentage": false,
+      "pluginVersion": "7.1.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [
+        {
+          "alias": "192.168.1.104:8080 p95",
+          "yaxis": 2
+        },
+        {
+          "alias": "192.168.1.11:8080 p95",
+          "yaxis": 2
+        },
+        {
+          "alias": "192.168.1.236:8080 p95",
+          "yaxis": 2
+        },
+        {
+          "alias": "192.168.1.104:8080 p50",
+          "yaxis": 2
+        },
+        {
+          "alias": "192.168.1.11:8080 p50",
+          "yaxis": 2
+        },
+        {
+          "alias": "192.168.1.236:8080 p50",
+          "yaxis": 2
+        }
+      ],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(liveness_heartbeatlatency_bucket[$__interval]))",
+          "interval": "",
+          "legendFormat": "{{instance}} p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.5, rate(liveness_heartbeatlatency_bucket[$__interval]))",
+          "interval": "",
+          "legendFormat": "{{instance}} p50",
+          "refId": "B"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "CockroachDB heartbeat latency",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "$$hashKey": "object:3382",
+          "format": "ns",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": "0",
+          "show": true
+        },
+        {
+          "$$hashKey": "object:3383",
+          "format": "ns",
           "label": null,
           "logBase": 1,
           "max": null,
@@ -2279,5 +2500,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 2
+  "version": 4
 }

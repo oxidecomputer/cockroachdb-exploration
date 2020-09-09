@@ -746,3 +746,33 @@ mp forward: not live
 Wraps: (2) not live
 Error types: (1) *withstack.withStack (2) *errors.errorString
 ----
+
+== 2020-09-09
+
+Switching to "kv" workload (see yesterday's notes).
+
+cockroach workload init kv --concurrency 4 --max-block-bytes=4096 --min-block-bytes=3072
+for c in 4 8 16 32 64 128; do
+    cockroach workload run kv --concurrency $c --duration 10m --histograms histograms-kv-c=$c-$(date +%FT%TZ)Z.out  --max-block-bytes=4096 --min-block-bytes=3072 --read-percent=50 --tolerate-errors
+done
+
+Notes:
+
+* This is a considerably larger record size than I had been testing previously.
+* The database is getting bigger each time this way so it's not a totally fair test among different levels of concurrency.
+
+Results:
+
+* The total number of SQL connections and active queries scales up with the concurrency as we'd expect.
+* Starting with c=8:
+** the CPU utilization graphs look about the same for all runs.
+** the distribution of SQL queries to each node looks about the same.
+* The SQL query throughput looks about the same among all these runs.
+* The SQL query p95 latency increases with each run.
+* According to `iostat`, the disk is quite busy much of the time (essentially 100% at c=64).  Occasionally, the wait time at the zpool level is upwards of 100 (ms?), but it never gets nearly that high on the actual disk.
+* There was one spike in p99 SQL latency of 9s on one node (192.168.1.236 @ 15:48:30Z).
+
+Conclusions:
+
+* The system is basically saturated at c=4.
+* Extreme outliers start around c=32.  Things really start getting nonlinear around c=128.
