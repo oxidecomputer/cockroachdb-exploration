@@ -109,6 +109,9 @@ svccfg import /opt/oxide/smf/chrony.xml
 # Configure node_exporter
 svccfg import /opt/oxide/smf/node-exporter.xml
 
+# Configure illumos-exporter
+svccfg import /opt/oxide/smf/illumos-exporter.xml
+
 # Apply role-specific configuration.
 if [[ $VMI_ROLE == "mon" ]]; then
 	#

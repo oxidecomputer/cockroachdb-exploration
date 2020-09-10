@@ -1,0 +1,32 @@
+<?xml version='1.0'?>
+<!DOCTYPE service_bundle SYSTEM '/usr/share/lib/xml/dtd/service_bundle.dtd.1'>
+<service_bundle type='manifest' name='export'>
+  <service name='application/illumos-exporter' type='service' version='0'>
+    <single_instance/>
+    <dependency name='network' grouping='require_any' restart_on='error' type='service'>
+      <service_fmri value='svc:/network/service'/>
+    </dependency>
+    <dependency name='filesystem' grouping='require_all' restart_on='error' type='service'>
+      <service_fmri value='svc:/system/filesystem/minimal'/>
+    </dependency>
+    <dependency name='name-services' grouping='optional_all' restart_on='none' type='service'>
+      <service_fmri value='svc:/milestone/name-services'/>
+    </dependency>
+    <dependency name='routing-setup' grouping='optional_all' restart_on='none' type='service'>
+      <service_fmri value='svc:/network/routing-setup'/>
+    </dependency>
+    <dependency name='ntp' grouping='exclude_all' restart_on='none' type='service'>
+      <service_fmri value='svc:/network/ntp:default'/>
+    </dependency>
+
+    <exec_method name='start' type='method' exec='/opt/oxide/sbin/illumos-exporter -b 0.0.0.0:9101 &amp;' timeout_seconds='600' />
+    <exec_method name='stop' type='method' exec=':kill' timeout_seconds='60'/>
+    <instance name='default' enabled='true' />
+    <stability value='Unstable'/>
+    <template>
+      <common_name>
+        <loctext xml:lang='C'>Prometheus illumos-exporter</loctext>
+      </common_name>
+    </template>
+  </service>
+</service_bundle>

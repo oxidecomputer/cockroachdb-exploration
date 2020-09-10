@@ -53,3 +53,18 @@ scrape_configs:
       target_label: 'role'
     - source_labels: [ __meta_ec2_tag_Name ]
       target_label: 'vmname'
+
+  - job_name: 'illumos_metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    ec2_sd_configs:
+      - port: 9101
+        filters:
+          - name: 'tag:Project'
+            values: [ 'crdb_exploration' ]
+
+    relabel_configs:
+    - source_labels: [ __meta_ec2_tag_Role ]
+      target_label: 'role'
+    - source_labels: [ __meta_ec2_tag_Name ]
+      target_label: 'vmname'
