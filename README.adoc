@@ -15,6 +15,11 @@ Plan (again, see RFD 53):
 
 * Go through some basic docs:
 ** Tutorials, starting with https://www.cockroachlabs.com/docs/v20.1/demo-replication-and-rebalancing.html[Replication and rebalancing]
+* Maybe some even more basic testing
+** behavior using haproxy as a load balancer when queries just take a while
+** can we reproduce the basic sysbench results on their website?
+** can we reproduce any other benchmarking results on their website?
+** can we run one of those for an extended period?
 * Basic testing
 ** Look at 'SHOW RANGES FROM TABLE ... '
 ** Look at 'SHOW RANGES FROM INDEX ... '

@@ -776,3 +776,103 @@ Conclusions:
 
 * The system is basically saturated at c=4.
 * Extreme outliers start around c=32.  Things really start getting nonlinear around c=128.
+
+Possible way to go next: stick with c=16 and expand the cluster while all this is going on.  From initial 3 nodes -> 6 nodes -> 9 nodes -> 12 nodes.
+
+17:10Z: deployed node#4.
+17:14Z: the new node is definitely in service.  CPU utilization of other nodes has gone down a bit, as has query throughput.  p95/p99 latency spiked a lot.  Heartbeat latency spiked to over 5s.  Big spike in exec errors over 4Kps.
+17:17Z: another spike in p95/p99 to 10s.  I don't know why this is happening -- the client isn't even updated to establish new connections so it shouldn't be using the new node.
+
+[source,text]
+----
+  760.0s        0            0.0          366.8      0.0      0.0      0.0      0.0 write
+E200909 17:13:18.084065 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n2: breaker open [exhausted]) (SQLSTATE 40003)
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+  761.0s        1           21.0          364.9    130.0  13421.8  13421.8  13421.8 read
+...
+  969.0s        4            0.0          304.6      0.0      0.0      0.0      0.0 write
+E200909 17:16:47.529391 1 workload/cli/run.go:445  EOF
+  970.0s        5            6.0          303.1     13.1     35.7     35.7     35.7 read
+  970.0s        5            5.0          304.3     18.9  60129.5  60129.5  60129.5 write
+E200909 17:16:48.580680 1 workload/cli/run.go:445  EOF
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+  971.0s       15          115.0          302.9     17.8  60129.5  60129.5  60129.5 read
+  971.0s       15          111.0          304.1     15.2    113.2  60129.5  60129.5 write
+----
+
+As of 17:19Z: consistently seeing 20 errors per second with 100-200 ops per second.
+
+Note: Prometheus didn't pick up the new node right away.  Maybe a better methodology is to preprovision everything, then shut down a bunch?
+
+17:22:45: restarted Prometheus
+
+Note: replication started around 17:12:30 and finished around 17:25:Z.
+
+At 17:30Z, I'm going to restart the load generator to force it to pick up all four nodes.
+
+Perhaps not surprisingly?  This only made some performance worse because some ranges moved to a node that's not handling any requests.
+
+17:28:50Z: restarted client workloads  However, despite having sent SIGHUP to haproxy, it doesn't seem to have picked up the fourth server.
+17:30:40Z: restart both haproxy and load generator.
+Now we do see 4 active servers in haproxy and all four CRDB nodes have connections.
+
+Note: I just checked the CRDB Admin UI to look at "queries per store", which has previously been a proxy for whether queries were being served equally by the different nodes, and it does look well distributed both before and after the new node was added.
+
+The performance now is decidedly worse than before I added the new node.  p95/p99 latency is definitely higher for two nodes, and about the same for the other two (even the one which wasn't up, which is weird).  Right now, the disks on db0 are 100% pegged all the time.  Disks on the other two original nodes have a fair bit of headroom.  Why is that one so busy?  Is this because the kv workload is not random?
+
+In the Admin UI, I see that the UPSERT statements have seen 10 retries, but that's cumulative -- doesn't seem important.
+
+I can see that all four nodes are serving a comparable number of queries, and their CPU utilization isn't to far off (and all under 30% per CPU).  But db0 is still being hammered on I/O.  db1 is going through periods where it's busy too, but not nearly as much.  Note that average service time on this disk is worse than disk on db1, even when db1's is busy too, by a factor of 3 or so (6ms for db1, 20ms for db0).  A few minutes later: the 100% busy seems to have moved to db2 and db0 was idle for a little while.  A few seconds later we're back to db0.
+
+Maybe it would be more interesting to do just 20% writes / 80% reads.
+
+CRDB does recommend:
+
+> Disks must be able to achieve 500 IOPS and 30 MB/s per vCPU....Monitor IOPS for higher service times. If they exceed 1-5 ms, you will need to add more devices or expand the cluster to reduce the disk latency.
+
+Anyway, the preformance has been the same for a while.  I'm going to shut this down and drop both databases for now in prep for future runs.  I'm also going to decommission that fourth node.
+
+This failed:
+
+[source,text]
+----
+# cockroach node decommission  4
+
+  id | is_live | replicas | is_decommissioning | membership | is_draining
+-----+---------+----------+--------------------+------------+--------------
+   4 |  true   |       53 |       false        |   active   |    false
+(1 row)
+
+  id | is_live | replicas | is_decommissioning |   membership    | is_draining
+-----+---------+----------+--------------------+-----------------+--------------
+   4 |  true   |       53 |        true        | decommissioning |    false
+(1 row)
+..........
+  id | is_live | replicas | is_decommissioning |   membership    | is_draining
+-----+---------+----------+--------------------+-----------------+--------------
+   4 |  true   |       52 |        true        | decommissioning |    false
+(1 row)
+...........
+ERROR: connection lost.
+
+while trying to mark as decommissioning: rpc error: code = Unavailable desc = transport is closing
+Failed running "node decommission"
+----
+
+More haproxy woes?
+
+== 2020-09-10
+
+Not much testing today, but I'm reflecting on the issues I've hit so far.  I've hit a bunch of different client issues that seem potentially related to overload, and seen symptoms of overloaded servers (e.g., missed heartbeats).  I've potentially been pushing the system beyond its intended capacity, particularly in terms of I/O.  It _should_ handle that okay, but maybe isn't a great first test.
+
+Maybe try a few simplifying changes:
+
+* Provision 6 database nodes up front, but don't start CockroachDB on three of them.  (Or, disable cockroachdb on the last three before running `cockroach init`.)  This way I eliminate any disruptive change to the initially-running three (like restarting them, which my Terraform config normally does, although I had commented that out yesterday).  And I know exactly when each one starts.
+* Factor out haproxy: instead of one load generator process using haproxy to talk to CRDB nodes, maybe use separate client processes pointed at specific CRDB nodes.  They won't automatically start using new nodes this way so I will have to start more up again.
+* Let's not start by pushing the cluster to its limit.  Instead, let's separate out a few different questions:
+** try to replicate something close to the https://www.cockroachlabs.com/docs/stable/performance.html#throughput[basic sysbench numbers that they got on AWS]?  These are much bigger machines, but even if we can just achieve that latency at a lower level of concurrency, that'd be useful.
+** demonstrate horizontal scalability (_not_ necessarily online): maybe the way to think about this is: ramp up load generators until p95 latency reaches some target.  See how that point differs at different cluster sizes.
+** demonstrate expanding the cluster under modest load (largely ignoring performance -- it would be enough that it doesn't get worse or experience errors)
+** demonstrate shrinking the cluster under modest load (similar to expansion)
+** demonstrate the impact of failures on a modest load (again, largely ignoring performance)
+
