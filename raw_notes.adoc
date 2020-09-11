@@ -876,3 +876,4 @@ Maybe try a few simplifying changes:
 ** demonstrate shrinking the cluster under modest load (similar to expansion)
 ** demonstrate the impact of failures on a modest load (again, largely ignoring performance)
 
+Last item of the day: trying to get %busy and average I/O time metrics in Grafana.  This is a little tricky from the kstats.
