@@ -156,7 +156,7 @@ elif [[ $VMI_ROLE == "loadgen" ]]; then
 	cat >> /cockroachdb/etc/environment <<-EOF
 	export COCKROACH_HOST="$VMI_IP"
 	export COCKROACH_INSECURE=true
-	export PATH="\$PATH:/cockroachdb/bin"
+	export PATH="\$PATH:/cockroachdb/bin:/opt/sysbench/bin"
 	EOF
 	echo "source /cockroachdb/etc/environment" >> ~root/.profile
 	echo "source /cockroachdb/etc/environment" >> ~cockroachdb/.profile

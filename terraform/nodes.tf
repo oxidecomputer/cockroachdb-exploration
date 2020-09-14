@@ -7,7 +7,7 @@ locals {
   mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
-  ndbs = 3
+  ndbs = 6
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
@@ -41,6 +41,8 @@ resource "aws_instance" "db" {
 
   root_block_device {
     volume_size = 60
+    volume_type = "io1"
+    iops = 500
   }
 
   tags = {

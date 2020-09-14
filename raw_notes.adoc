@@ -877,3 +877,120 @@ Maybe try a few simplifying changes:
 ** demonstrate the impact of failures on a modest load (again, largely ignoring performance)
 
 Last item of the day: trying to get %busy and average I/O time metrics in Grafana.  This is a little tricky from the kstats.
+
+== 2020-09-14
+
+Conclusions from today:
+
+* Built sysbench and started using its oltp_insert workload for testing.
+* Ran into major interference from AWS "gp2" (storage volume) performance, which falls off a cliff potentially hours after starting a workload.  Confirmed this with CloudWatch "burst" metric.  Will work around this with "io1" volumes instead of "gp2".
+* Aside from that, performance was reasonably stable.  I successfully expanded the cluster a few times.  Performance got better, but not linearly so, and load was not perfectly distributed with n=4 or n=5.  (Did not get to n=6 because of the I/O problem.)
+* Ran into minor issue with the image I'm using: can't install packages with `pkg`, apparently due to missing SSL certs.
+
+Details:
+
+* I've brought up a cluster with 6 database nodes, but only three had cockroachdb running when I initialized the cluster.
+* Made a build of sysbench:
+** in my build machine, had to install postgresql-12, autotools, libtool
+** note: could not do this in Joshua's image because pkg tools can't do anything because they're looking for /etc/openssl/certs.  In my build zone, that appears to be /etc/{ssl,crypto}/certs.
+** set --prefix=/opt/sysbench, tarred up directory, and copied to "loadgen0".  Also needed to add libpq.so, which I did by hand afterwards.
+** `LDFLAGS='-R /opt/sysbench/lib'  ./configure --without-mysql --with-pgsql --prefix=/opt/sysbench`
+
+Around 9:23AM PT:
+
+[source,text]
+----
+# sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+from loadgen0.  That settled around 200 inserts per second (all handled by .227, which is db0), p95 latency=6ms, p99 latency=13ms, about 50% CPU utilization in all four CPUs of db0 and db1, just over 40% disk busy time in all three db nodes.  That's all writes, about 4 MBps, with spikes up to almost 8.
+
+By 9:37, this has been quite stable.  Let's start another load generator aimed at db1:
+
+[source,text]
+----
+# sysbench --threads=1 --time=0 --pgsql-host=192.168.1.66 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+By 9:47, this has been quite stable in throughput, with some variation in latency.  We're at 300 inserts / second, evenly split between db0 and db1.  CPU utilization for those nodes is 50%-60% (per CPU).  p95 latency (both nodes) is around 8ms, p99 latency ranging from 16-17.5ms.  Disks almost 50% busy on all nodes.  Average disk I/O time is unchanged, largely maxing around 800us -- pretty good!  CockroachDB heartbeat p99 latency is pretty consistently under 10ms.
+
+At 9:50AM, I started a third load generator (same loadgen VM):
+
+[source,text]
+----
+# sysbench --threads=1 --time=0 --pgsql-host=192.168.1.214 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+This has settled at a throughput of about 400 inserts per second, evenly split among all three db hosts.  CPU utilizationr anges from 36-60% (per CPU) on the db nodes, with db2 closer to 40% (lower than the other two).  p95 ranges from 8-10ms, p99 15-22ms.  Disks are about 50% busy.  The disk write IOPS and busy time haven't changed a lot with the last addition.  I'm seeing CockroachDB p99 heartbeat outliers up to 110ms, but that's still quite quick.
+
+I'm going to let this run a little while longer to see what happens.
+
+At 10:47AM: this has been fairly stable at the above numbers.  There are a couple of ways to go from here:
+
+* could add more write load (an additional thread for each load generator)
+* could add a read workload
+* could try turning off one node, but we're not going to be able to take writes that way anyway since the replication factor is 3
+* try expanding the cluster without changing the load
+** more conservative: do it without the workload running and see if it affects anything
+** more aggressive: do this with the workload running
+
+I'm leaning towards online expansion of the cluster.  At 10:51am: enabled cockroachdb on db3.
+
+10:57am: there was a burst of errors (peaking at 1 error per second) when I enabled CRDB, though the load generators didn't complain at all.  Cockroach heartbeat p99 latency peaked at 40ms.  I can see the new node took on some of the write workload, particularly from db1 (looking at a shift in the write IOPS graph and percent-busy graph).  Average I/O time is still well under 1ms, and disks remain about 50% busy on the busy nodes (less so on db1 and the new db3).  Overall average throughput is slightly increased (just under 400 inserts per second to about 420).  p95 and p99 decreased a few ms each but are largely the same.  Next I will add the next database node.
+
+11:01AM PT: added next node.
+
+11:13AM PT: average throughput essentially unchanged, though there was a momentary crash at 18:01:30Z to just under 300 inserts per second.  That correlated with a spike in p95 on all nodes to about 15-19ms and p99 to about 35-41ms.  This seems to have shifted load from db2 (in terms of CPU utilization and disk usage and write IOPS).  Heartbeat latency p99 peaked at 204ms on the newly-added node.  Again, we had a small spike in error rate.  It's not clear if the client saw theses.
+
+11:17AM PT: I'm going to turn off the load generators and turn them on again in order to get summary reports from them and to make sure the load isn't somehow state-dependent.  Before I do that, I see why had another small crash in throughput at 18:18Z.  This affected all nodes, like the previous one.  Note that there's plenty of CPU headroom on each CPU (though utilization spiked to 80% on a few CPUs at the time of the crash).  Similarly, disk %busy never exceeded 60% on the peak node, and it actually dipped at this time.  Average disk I/O latency was unchanged around this time.  Network throughput had a small dip.  There's no spike in heartbeat latency.  The only thing I see is a small spike in CRDB "exec_error", but it's less even than when adding new nodes before.  Well, as I said, I'm going to restart the load generators to get their numbers.
+
+11:22AM PT: I killed the load generators, but they did not report any numbers, unfortunately.  I restarted these all around 11:23:31 PT.
+
+11:48AM PT: noticed a major reduction in throughput that started around 11:41.  This seems to have been caused by a very sudden spike in average disk I/O latency on db0, from about about 300us to about 3ms.  Other VMs were not affected by this, but naturally the %busy on db0 shot up, to about 88%.  Write IOPS went down everywhere by a factor of ~4-5.  Net throughput dropped significantly too.  No spike in CRDB heartbeat latency nor errors.  CPU utilization down across the board.  p95 CRDB latency shot from about 10ms to about 40ms across the board, and p99 from about 20ms to about 50ms.  This is all consistent with a sudden, terrible degradation in performance from EBS, and I can't think of an obvious cause in the application.
+
+Digging into this, there's some https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html[documentation on this].
+
+> Each volume receives an initial I/O credit balance of 5.4 million I/O credits, which is enough to sustain the maximum burst performance of 3,000 IOPS for 30 minutes. This initial credit balance is designed to provide a fast initial boot cycle for boot volumes and to provide a good bootstrapping experience for other applications. Volumes earn I/O credits at the baseline performance rate of 3 IOPS per GiB of volume size. For example, a 100 GiB gp2 volume has a baseline performance of 300 IOPS. 
+> The maximum I/O credit balance for a volume is equal to the initial credit balance (5.4 million I/O credits). 
+
+Baseline performance for my 60 GiB volume would be 180 IOPS.
+
+Based on their equation:
+
+[source,text]
+----
+burst duration = (credit balance) / (burst IOPS - 3 * volsize)
+    = 5.4M / (1600 IOPS - 3 * 60GiB)
+    = 5.4M / (1600 - 180)
+    = 5.4M / 1420
+    = 3800
+----
+
+Presumably that's 3800 seconds, or 63 minutes.  I confirmed with CloudWatch that this instance ran out of its credit around 18:40Z.
+
+How to work around this?  It seems very hard to manage this in a benchmarking environment.  Even if I could spend all the credits up front, it'd be hard to make sure it was constantly zero -- and across all six database hosts.
+
+Here are a few different pricing options:
+
+* https://calculator.aws/#/estimate?id=16e6ed9a0102c9e24880a0175edaa9eef88ac8c9[Original estimate] (6 c4.large instances with 60 GiB gp2 volumes (180 IOPS)): $474 / month
+* https://calculator.aws/#/estimate?id=184d382407f5e4a64b296ec69c374f3155419801[Estimate using 167GiB gp2 volumes] to get 500 IOPS: $538.20 / month
+* https://calculator.aws/#/estimate?id=efaf0e10e9cf496d4dfcc95a26dbbf4cecef56b7[Estimate using 60 GiB io1 volumes] with 500 IOPS: $678 / month
+
+It's cheaper to just get bigger "gp2" volumes than to buy provisioned IOPS.  The problem is that I actually kind of want the consistency: I don't want the performance to plummet like it did today, even if the low value is actually fine.  It sure sucks to pay more for the same IOPS and less storage, though.
+
+Note that the load generator does not need this.  It can stay with "gp2".
+
+At 3:10PM PT, I'm re-evaluating performance from the last three hours:
+
+* p95 has been pretty consistently around 42ms
+* p99 has been 50-100ms with lots of spikes (peak spike was 125ms)
+* CPU utilization has been consistently low
+* Query throughput has consistently averaged about 125 inserts per second, though it's been rocky ranging from 100-125 qps.
+* Average I/O time for all disks has been under 1ms except for db0, which has averaged 3.4ms (see above).  All disks except that one have been under 20% busy, while that one averaged 90%.
+* Write IOPS differs across hosts and ranges from about 200 to 550.  Read IOPS are negligible.
+* Network throughput is negligible -- averaged under 400 KBps for either inbound or outbound for all hosts.
+* NTP: according to Cockroach, the mean RPC clock offset has maxed at around 200us.
+* Average p99 CockroachDB heartbeat latency for the worst node is 44ms.  Peak was 354ms.
+* Peak error rate was 0.35 errors per second at one point.
+
+Overall I'd say it's been fairly stable, for a system that's maxxed out at I/O capacity.
