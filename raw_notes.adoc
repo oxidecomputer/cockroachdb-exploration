@@ -994,3 +994,248 @@ At 3:10PM PT, I'm re-evaluating performance from the last three hours:
 * Peak error rate was 0.35 errors per second at one point.
 
 Overall I'd say it's been fairly stable, for a system that's maxxed out at I/O capacity.
+
+I used Terraform to update the storage class from "gp2" to "io1" (that can be done online) and redeployed the load generator completely to get the sysbench binaries.
+
+Plan for tomorrow:
+
+* Run a similar sequence of steps now that I'm on "io1" storage.
+
+== 2020-09-16
+
+Summary of the day:
+
+* Restarted testing on sysbench database, now that I'm using provisioned IOPS.
+* Forgot to scale-down the cluster to 3 nodes, so I decided to try this dynamically.  Found some surprising replication behavior and posted to the forum about this.
+* Also found that the workload got very suddenly faster (2x) after an hour or so.  Resource utilization went down, but I/O latency didn't get any faster.  It's as though it just got twice as efficient.  Relatedly, there was a range merge when this happened, so maybe some writes avoided some round-trips after that?  This is great (load-based range merges), but also makes testing performance harder.
+
+Plan for today:
+
+* drop previous sysbench database
+* disable db3, db4 to get back to a 3-node cluster
+* ramp up workload:
+** start one load generator for each db node, about 10 minutes apart
+* expand cluster, one node at a time, about 10 minutes apart
+
+17:12Z: dropped database.  This was fairly cheap and didn't seem to do much work (I/O or otherwise).  Somewhat surprisingly, this didn't affect percentage of capacity used or the total number of ranges.  This https://forum.cockroachlabs.com/t/reclaiming-storage-capacity/1024[appears to be a result of the delayed GC process].  This might be an opportunity to reconfigure the TTL period as a test.
+
+At around 17:19:30Z:
+
+[source,text]
+----
+root@192.168.1.227:26257/defaultdb> SHOW ZONE CONFIGURATION FOR RANGE default;
+     target     |              raw_config_sql
+----------------+-------------------------------------------
+  RANGE default | ALTER RANGE default CONFIGURE ZONE USING
+                |     range_min_bytes = 134217728,
+                |     range_max_bytes = 536870912,
+                |     gc.ttlseconds = 90000,
+                |     num_replicas = 3,
+                |     constraints = '[]',
+                |     lease_preferences = '[]'
+(1 row)
+
+Time: 1.926221ms
+
+root@192.168.1.227:26257/defaultdb> ALTER RANGE default CONFIGURE ZONE USING gc.ttlseconds=300 ;
+CONFIGURE ZONE 1
+
+Time: 27.301437ms
+
+root@192.168.1.227:26257/defaultdb>
+----
+
+After this, I see:
+
+- small spikes in CPU utilization (way more than before, but peaking at about 18% per CPU)
+- some disk I/O and disk writes.
+- a reduction in ranges per node from 38 to 34
+- a reduction in capacity used per node from about 2.4% back to about 0.6%
+
+That seems to have worked as expected.  I'm going to configure it back to the default:
+
+
+[source,text]
+----
+root@192.168.1.227:26257/defaultdb> ALTER RANGE default CONFIGURE ZONE USING gc.ttlseconds=90000;
+CONFIGURE ZONE 1
+
+Time: 26.959762ms
+
+root@192.168.1.227:26257/defaultdb> SHOW ZONE CONFIGURATION FOR RANGE default;
+     target     |              raw_config_sql
+----------------+-------------------------------------------
+  RANGE default | ALTER RANGE default CONFIGURE ZONE USING
+                |     range_min_bytes = 134217728,
+                |     range_max_bytes = 536870912,
+                |     gc.ttlseconds = 90000,
+                |     num_replicas = 3,
+                |     constraints = '[]',
+                |     lease_preferences = '[]'
+(1 row)
+
+Time: 1.984135ms
+----
+
+So that's good.  On to the workloads.
+
+I forgot (and hadn't previously noted) that I needed to run:
+
+[source,text]
+----
+root@192.168.1.227:26257/defaultdb> CREATE DATABASE sbtest;
+CREATE DATABASE
+
+Time: 28.410777ms
+
+root@192.168.1.227:26257/defaultdb> ^D
+root@loadgen0:~# sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert prepare
+WARNING: Both event and time limits are disabled, running an endless test
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Creating table 'sbtest1'...
+Inserting 10000 records into 'sbtest1'
+Creating a secondary index on 'sbtest1'...
+----
+
+Now the work:
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+That started at 17:27:15.
+
+17:34Z.  Oops.  I forgot to shut down the two database nodes.  I will try that now, while the workload is running.  Did that around 17:35:15.  Both were graceful shutdowns (well, `svcadm disable`).  As expected, we see a bunch of under-replicated ranges.  In about 5 minutes we should see that number go back to zero.  Note that after doing this:
+
+* CPU utilization changed as expected: the two nodes I shut down went very low.  One of the remaining three nodes went up.  For whatever reason, db1 remains pretty idle.
+* Transaction throughput is holding steady around 125 inserts / second.  It's unchanged after this change.
+* p95 is about 11-12ms.  p99 is around 18ms.  These are unchanged after this change.
+* I'm not sure why, but disk utilization on db0 went down, and db2 went up.
+* db0 and db2 are doing almost exactly 1000 write IOPS, unchanged by the change.  db4 had been doing a lot, but that crashed (as expected) when I brought it offline).
+
+Around 17:41Z, we see the cluster rebalance itself:
+
+* the count of under-replicated ranges starts falling
+* db1 quickly starts hitting 1000 write IOPS and its percent busy increases
+* db0's disk utilization (%busy) goes down a bit from about 50% to about 40% (eyeballing it)
+* db2's disk utilization (%busy) goes up by a comparable amount.
+* CPU utilization increases on db1 from about idle to about 40% -- less than the other two, but doing a bunch of work now.
+* In terms of impact: throughput was a little less consistent, but not much, and holding steady around 125 inserts / second.
+* p95 and p99 are not visibly different.
+* p99 heartbeat latency has peaked at about 95ms through this whole activity.
+
+For some reason I don't understand, the system seems to have settled at 33 under-replicated ranges.  It's not clear why this would be.  I dug into the admin UI a bit and found that the `sbtest` database has one table, `sbtest`, which uses 95 MiB and 2 total ranges.  That may explain why only two nodes were busy earlier.  There are 22 ranges in the "system" database.  I'm not sure where the other 12 ranges come from, sicne the system reports 36 total ranges.  And I'm not sure why 33 are under-replicated.
+
+In the "Advanced Debug" "Problem Ranges Report", I can see that the under-replicated ranges are 1-34, except for range 4.  I picked range r3 arbitrarily.  The leader is n3, which is also the leaseholder.  That node is still online.  The replicas appear to be on n1 and n2, also both up.  There's a neat log for the range.  Key events:
+
+15:43 (long before I started): looks like the range is on n1, n2, and n3.  It already says "reason: range under-replicated".
+17:51:26Z: begin adding n4 because of rebalance
+17:51:26Z: begin removing n3 because rebalance (that seems weird)
+17:51:26Z: seem to be related to adding n4 again (VOTER_INCOMING vs. LEARNER)
+17:51:26Z: removed n3 ("abandoned learner replica")
+18:01:24Z: begin adding n5 because range under-replicated
+18:01:24Z: finish adding n5? (how is this possible?)
+18:01:24Z: begin adding n3 as a replica because range under-replicated
+18:01:24Z: finish adding replica n3
+
+Things I don't understand about this:
+
+* n4 and n5 should be suspect from 17:36 to 17:41 and dead after that.  How did we pick them as new replicas at 17:51?
+* why did we abandon n3 at 17:51Z?
+* how did we finish adding n5 as a replica at 18:01 if it's offline?
+* why aren't we trying to fix the fact that it's under-replicated?
+* (what are all the different states for replicas?)
+
+Of note, according to https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting#admin-ui-shows-under-replicated-unavailable-ranges[this section in the docs]:
+
+>  The number of failures that can be tolerated is equal to (Replication factor - 1)/2. Thus CockroachDB requires (n-1)/2 nodes to achieve quorum. For example, with 3x replication, one failure can be tolerated; with 5x replication, two failures, and so on.
+
+In this case, we had five nodes, but the replication factor was only 3, which means we can only tolerate one failure.  Given that, I suppose it wasn't reasonable to expect that we could retain cluster liveness after this operation; however, it's a little surprising the data remains under-replicated given that at least one copy is available, and this range was never leased to a node that was down.
+
+The link above has some useful debugging instructions, but they require you to look at the "Simulated Allocator Output".  I get an error accessing that:
+
+> An error was encountered while loading this data: This information is not available due to the current value of the 'server.remote_debugging.mode' setting. Insufficient privileges to view this resource.
+
+There's a "Learn more" link, but the content there implies that on an insecure cluster, there should be no privilege issue.  That setting is documented thus:
+
+> set to enable remote debugging, localhost-only or disable (any, local, off)
+
+with a default of "local".  I guess the problem here is that I'm not coming in over localhost.
+
+Here, I updated it:
+
+[source,text]
+----
+root@loadgen0:~# cockroach sql --host 192.168.1.227
+#
+# Welcome to the CockroachDB SQL shell.
+# All statements must be terminated by a semicolon.
+# To exit, type: \q.
+#
+# Server version: CockroachDB CCL v20.2.0-alpha.1-1729-ge9c7cc561c-dirty (x86_64-sun-solaris2.11, built 2020/08/04 04:08:24, go1.14.4) (same version as client)
+# Cluster ID: cfb6ffc3-3553-4629-a174-beb9328b4f57
+#
+# Enter \? for a brief introduction.
+#
+root@192.168.1.227:26257/defaultdb> SHOW CLUSTER SETTING server.remote_debugging.mode;
+  server.remote_debugging.mode
+--------------------------------
+  local
+(1 row)
+
+Time: 905.67µs
+
+root@192.168.1.227:26257/defaultdb> SET CLUSTER SETTING server.remote_debugging.mode = "any";
+SET CLUSTER SETTING
+
+Time: 37.307198ms
+
+root@192.168.1.227:26257/defaultdb> SHOW CLUSTER SETTING server.remote_debugging.mode;
+  server.remote_debugging.mode
+--------------------------------
+  any
+(1 row)
+
+Time: 804.065µs
+
+root@192.168.1.227:26257/defaultdb>
+----
+
+Now that web page works.  The messages are:
+
+> kv/kvserver/allocator.go:402 [n3,status] replace dead - replacement for 2 dead replicas priority=12000.00
+> kv/kvserver/replicate_queue.go:343 [n3,status] next replica action: replace dead
+> kv/kvserver/allocator.go:508 [n3,status] allocate candidates: []
+> kv/kvserver/store.go:2630 [n3,status] error simulating allocator on replica [n3,s3,r3/6:/System/{NodeLive…-tsd}]: 0 of 3 live stores are able to take a new replica for the range (3 already have a replica); likely not enough nodes in cluster
+
+This is consistent with the documentation, but a little surprising: if the live nodes have replicas (which they do), why is it under-replicated?  If they don't, why can't we create a replica there?
+
+Stopped to debug this a bit further.
+Found https://godoc.org/github.com/cockroachdb/cockroach/pkg/roachpb#ReplicaType[documentation about the replica states].
+
+Note also that performance skyrocketed at 18:27Z, from 125 inserts per second to just over 300.  They're still all being served from the same node.  CPU utilization and disk busy time went down.  Naturally, p95 and p99 went down.  However, average I/O time didn't go down, and bytes written per second _did_ -- it's as though the thing got suddenly more efficient.  Did we have a split?  Is that why it got better?  If so, how?
+
+I did see that in Admin UI, under "KV Transactions", we had been doing 100% "committed" transactions and 0 "fast-path committed".  At about this time, we went to 330 of both "committed" and "fast-path committed".  At the same time, we went from a fair number of "partial batches" to 0.
+
+One big change is that from about 17:30 to 18:30, queries were split evenly between stores n1 and n2.  At 18:30, they were all on n2.  This was about the time the cluster dropped one range (from 36 to 35).  There was a merge around this time, and "sbtest1" is now in one range.  This kind of makes sense -- no more round-trip latency?  But it's going to make testing hard again.
+
+Back to the replication question, I'm looking through forum posts:
+
+- Here's one about https://forum.cockroachlabs.com/t/resurrect-broken-cluster/3477/2[truly bad DR].
+- Here's an https://forum.cockroachlabs.com/t/under-replicated-range-in-the-cluster/3558[interesting tool: manually re-replicate a range].
+
+I submitted a post to the forum about this that's currently awaiting moderation.  My notes and screenshots are in https://gist.github.com/davepacheco/5f6dcf64104bfdf49802504c2f30feb1#file-notes-md[this gist].
+
+Out of convenience, I let this workload run for several more hours.  As of 23:40Z (5 hours since the jump in performance at 18:30Z), over the last five hours:
+
+* Throughput has been stable at just over 300 inserts / second.
+* p95 has been stable at just over 3ms.
+* p99 has been stable at 4-7ms.
+* Disk %busy has been stable at 15-20% (max).
+* With one exceptional spike to almost 6ms on db5 (which is down!), average I/O latency has been stable under 1ms (mostly 300-400us on the active db nodes)
+* Disk write IOPS hover around 700 on the active nodes.  Less than 1 read IOPS.
+* There was only one p99 heartbeat latency above about 200ms, and that was about 1.7ms on one node around 18:50.  Average p99 is under 20ms.
+
+This is not an impressive load, but that seems pretty good behavior.
