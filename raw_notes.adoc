@@ -1239,3 +1239,257 @@ Out of convenience, I let this workload run for several more hours.  As of 23:40
 * There was only one p99 heartbeat latency above about 200ms, and that was about 1.7ms on one node around 18:50.  Average p99 is under 20ms.
 
 This is not an impressive load, but that seems pretty good behavior.
+
+== 2020-09-17
+
+Summary for today:
+
+* brought the down nodes back up and answered a bunch of my questions from yesterday.
+
+Details:
+
+* dropped `sbtest` database and recreated it
+* temporarily set gc.ttlseconds=30 to purge that data
+* at this point, the problematic ranges were not affected (still 33 under-replicated ranges)
+* enabled cockroachdb on db3, db4 at 21:17Z.  Under-replicated ranges quickly dropped to zero.
+
+Out of curiosity, what happened on our range 3 that we inspected yesterday?
+
+* The extra two columns show up in the top table for the replicas on n1 - n5.
+* There's nothing new in the range log since 9/14.  Wait, that seems like the wrong date!
+
+Was everything I was looking at yesterday garbage?  It seems like it was.  This answers most of our questions from yesterday, which were (taken from my post):
+
+> Why is this range considered “under-replicated” at all? As far as I can tell from the report, it has three replicas, one on each of the remaining available nodes. Relatedly, it seems contradictory that there could be no “live stores able to take a new replica” because all of them already have a replica (and given that there are as many live stores as the replication factor).
+
+This range has five replicas to begin with.  I checked the zone configuration, and the system ranges are all configured for 5 replicas:
+
+```
+root@192.168.1.227:26257/defaultdb> SHOW ZONE CONFIGURATIONS;
+                       target                      |                               raw_config_sql
+---------------------------------------------------+------------------------------------------------------------------------------
+  RANGE default                                    | ALTER RANGE default CONFIGURE ZONE USING
+                                                   |     range_min_bytes = 134217728,
+                                                   |     range_max_bytes = 536870912,
+                                                   |     gc.ttlseconds = 90000,
+                                                   |     num_replicas = 3,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  DATABASE system                                  | ALTER DATABASE system CONFIGURE ZONE USING
+                                                   |     range_min_bytes = 134217728,
+                                                   |     range_max_bytes = 536870912,
+                                                   |     gc.ttlseconds = 90000,
+                                                   |     num_replicas = 5,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  RANGE meta                                       | ALTER RANGE meta CONFIGURE ZONE USING
+                                                   |     range_min_bytes = 134217728,
+                                                   |     range_max_bytes = 536870912,
+                                                   |     gc.ttlseconds = 3600,
+                                                   |     num_replicas = 5,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  RANGE system                                     | ALTER RANGE system CONFIGURE ZONE USING
+                                                   |     range_min_bytes = 134217728,
+                                                   |     range_max_bytes = 536870912,
+                                                   |     gc.ttlseconds = 90000,
+                                                   |     num_replicas = 5,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  RANGE liveness                                   | ALTER RANGE liveness CONFIGURE ZONE USING
+                                                   |     range_min_bytes = 134217728,
+                                                   |     range_max_bytes = 536870912,
+                                                   |     gc.ttlseconds = 600,
+                                                   |     num_replicas = 5,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  TABLE system.public.replication_constraint_stats | ALTER TABLE system.public.replication_constraint_stats CONFIGURE ZONE USING
+                                                   |     gc.ttlseconds = 600,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+  TABLE system.public.replication_stats            | ALTER TABLE system.public.replication_stats CONFIGURE ZONE USING
+                                                   |     gc.ttlseconds = 600,
+                                                   |     constraints = '[]',
+                                                   |     lease_preferences = '[]'
+(7 rows)
+
+Time: 16.715016ms
+
+```
+
+Given that, it's expected that there would be five replicas, so it makes sense that with two nodes down, these ranges are under-replicated.
+
+> n4 and n5 were “suspect” by 17:36Z and “dead” by 17:41Z. Why did CockroachDB decide at 17:51Z to rebalance ranges from n3 onto these dead nodes? Does it not take into account that a node is dead before rebalancing?
+
+These timestamps were from the day before, when the nodes were probably up.
+
+> How is it possible that the replication apparently succeeded for n5 when that node was offline?
+
+Again, these timestamps were from the day before, when the nodes were probably up.
+
+> Why is that that the latest range descriptor in the log has all five nodes in it, but we only see three columns in the range report? Are there really five replicas and we don’t see those columns because the other two nodes are down?
+
+I don't have more information about this, but I suspect my guess is right there, that it just doesn't show columns from nodes that are down.  When I brought the nodes back up, the columns showed up.  When I temporarily bring down n4 again, the column disappears again.  When I bring it back, the column comes back.
+
+> In other words, maybe this is under-replicated not because there aren’t 3 (the replication factor), but because there are five, but two of them are on dead nodes? If that’s true, is there operationally a way to distinguish between replicas that are under-replicated because they’re under the replication factor vs. under-replicated because there are some dead replicas?
+
+The premise for this question is no longer valid -- the replication factor _is_ 5.
+
+> Relatedly, is there a way to know operationally how many under-replicated ranges are not making forward progress (e.g., because they require another node to be up)?
+
+I think this is a valid question.
+
+New questions:
+
+* Is there a way to determine what zone a range is part of?  The best way I know now is to figure out what database/table it's part of (for which I think there may be a reverse index, in the Admin UI, if you browse the databases/tables?), and then use `show zone configurations`.  You can also do the first part with `SHOW RANGES FROM ...`
+
+I wrote a new post on the CockroachDB forum.
+
+I ran out of time today -- got distracted with other things.
+
+== 2020-09-18
+
+Plan: basically same as 9/16, but try to do it right this time.
+
+* check on the https://forum.cockroachlabs.com/t/understanding-under-replicated-ranges/3982[CockroachDB forum thread I created].
+* drop and recreate previous sysbench database
+* disable db3, db4 to get back to a 3-node cluster
+* ramp up workload:
+** start one load generator for each db node, about 10 minutes apart
+* expand cluster, one node at a time, about 10 minutes apart
+
+Details:
+
+15:26Z: cluster started
+15:34Z: shut down nodes db3 and db4.  Both timed out and where forcibly killed by SMF.  As we'd expect, we have 33 under-replicated ranges -- presumably all system ranges.
+15:45Z: started sysbench workload from one client:
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert prepare
+...
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+15:55Z: started sysbench workload from second client (now two workloads running):
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.66 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+16:05Z: started sysbench workload from third client (now three workloads running):
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.214 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+I let this run for a few hours and ran into a few issues.  In the second and third load generators, sysbench reported:
+
+[source,text]
+----
+client_loop: send disconnect: Broken pipe
+----
+
+This appeared to happen at 18:05Z and 18:15Z, based on the throughput graphs.
+
+From about 16:10 to about 18:05Z, throughput was well-distributed across the nodes at about 280 total inserts per second.  There was plenty of CPU headroom and disks topped out around 75% busy.  p95 was steady around 16ms, p99 ranged from 18-40ms.  It's not at all clear what caused the client issues.  There was a tiny blip in "exec_error" around 18:05, but none around 18:15.  p99 heatbeat latency did spike a few times to almost 4s, including two spikes to 2.7s around 18:12:30 and 18:15.  Both of those were on .214, which is db2 (n3).  That's what the third load generator was talking to.
+
+Checked that CockroachDB has not restarted on either of those nodes.
+
+[source,text]
+----
+192.168.1.66  db1 == n3 workload failed at 18:05
+192.168.1.214 db2 == n2 workload failed at 18:15
+----
+
+Interesting that they started 10 minutes apart and failed 10 minutes apart,
+just about 2h10m after starting.
+
+
+Next step: check logs.  On db1, this would be around 18:05.  This looks surprising from the log:
+
+[source,text]
+----
+W200918 18:04:53.861971 1762946 vendor/google.golang.org/grpc/internal/channelz/logging.go:73  grpc: addrConn.createTransport failed to connect to {192.168.1.103:26257  <nil> 0 <nil>}. Err: connection error: desc = "transport: Error while dialing dial tcp 192.168.1.103:26257: connect: connection refused". Reconnecting...
+W200918 18:04:53.862255 1762949 vendor/google.golang.org/grpc/internal/channelz/logging.go:73  grpc: addrConn.createTransport failed to connect to {192.168.1.152:26257  <nil> 0 <nil>}. Err: connection error: desc = "transport: Error while dialing dial tcp 192.168.1.152:26257: connect: connection refused". Reconnecting...
+W200918 18:04:54.862449 1762949 vendor/google.golang.org/grpc/internal/channelz/logging.go:73  grpc: addrConn.createTransport failed to connect to {192.168.1.152:26257  <nil> 0 <nil>}. Err: connection error: desc = "transport: Error while dialing cannot reuse client connection". Reconnecting...
+W200918 18:04:54.862545 1762946 vendor/google.golang.org/grpc/internal/channelz/logging.go:73  grpc: addrConn.createTransport failed to connect to {192.168.1.103:26257  <nil> 0 <nil>}. Err: connection error: desc = "transport: Error while dialing cannot reuse client connection". Reconnecting...
+----
+
+Note that .103 and .152 are other cockroachdb server nodes: n5 and n4, respectively.  Those should both be offline -- and they are, and have been since 15:35Z.  Why those messages then?  Actually, these seem to be spat out every 30 seconds ro so.  So this is probably a red herring.
+
+I just realized that the `client_loop` error may have come from `ssh` -- around 11:05am PT and 11:15am PT.  I'm not sure why it would have affected those two and not the other load generator, and at different times, too.  I don't see anything too correlated in the system log on the load generator:
+
+[source,text]
+----
+Sep 18 18:08:16 loadgen0 sshd[2335]: [ID 800047 auth.error] error: kex_exchange_identification: Connection closed by remote host
+Sep 18 18:24:10 loadgen0 sshd[2610]: [ID 800047 auth.error] error: kex_exchange_identification: Connection closed by remote host
+----
+
+Obvious sources would be:
+
+- NAT state drop in my home router.  (No log message in the remote side?)
+- NAT state drop inside AWS?
+
+but why not the first ssh session?  Maybe I should use ServerAliveInterval to keep these open.
+
+Anyway, there's no indication of a CockroachDB problem here.  I'm going to restart the two workloads.
+
+20:44Z: restarted those two workloads
+20:59:24: brought up cockroachdb on db3.
+22:15Z: brought up cockroachdb on db4
+23:12Z: brought up cockroachdb on db5
+23:35Z: start load generators pointed at db3, db4, db5
+
+Summary of results:
+
+* When I brought up db3 at 20:59: there was a spike in p95 latency to over 40ms (from about 18ms) and a brief dip in throughput from about 280 qps to about 70 (but the period was so short that that time average is probably not meaningful).  After that, p95 latency was slightly lower than before, and throughput was slightly better (about 320qps).
+* When I brought up db4 at 22:15Z: throughput shot up to about 460qps.  p95 latency improved accordingly.
+* When I brought up db5 at 23:12Z, there was another spike in latency and brief dip in throughput, after which they were both about the same as before.  However, three nodes were still processing 0 requests.
+* When I brought up the extra three load generators at 23:35Z, request throughput evened out across all six nodes.  Overall throughput increased a fair bit, but it's ranged from 620-750qps -- not super consistent yet (as of 23:53Z).
+
+Through all of this:
+
+* CPU utilization on all CPUs has been below 80%.
+* There have been two disk %busy spikes over 75%, both very brief -- mostly they've been below 65%.
+* Average disk I/O time has largely been under 1ms, with a few spikes as high as 15ms or so.  (Interestingly, that 15ms outlier correlates with 5ms spent queued in the device driver, which is very rare -- that generally doesn't exceed a few tens of microseconds.)
+* p99 CockroachDB heartbeat latency has peaked at around 850ms, correlated with an 800ms spike in p99 round-trip latency around that time.
+* The error rate has peaked at about 3 per second.  It's largely been zero, with spikes around 2100Z, 22:05Z, 22:15Z, 23:15Z.  The biggest spikes have been around when we bring up new nodes.  I'm not sure I'm looking at SQL errors though -- these might all be internal errors.
+
+This has been good operational experience playing around with these operations, but feels a bit unfocused.
+
+---
+
+Stepping back, here are a few things I would like to better understand:
+
+* What's the performance impact of making write requests to the leaseholder of a range vs. one of the other nodes with a replica vs. one of the other nodes in the cluster?
+* How does that inform the best way to do basic load testing?
+* When is splitting better for load?  When is merging better?  How can you tell from the metrics?
+
+Is it worth trying to demonstrate horizontal scalability by starting up, say, 6 load generators pointing at a 3-node cluster, then expanding it to 6 nodes?  (Or, equivalently? starting 6 load generators, each pointing to a node in the 6-node cluster I already have, and then gradually repointing a load generator at one of the first three as I remove the last three nodes?)
+
+It might be worth stepping back to better understand what we'd really like to know, which is probably something like:
+
+* how is a moderately heavy read-write workload affected when one node disappears
+** for just a minute?
+** for a while (at least long enough for the cluster to rebalance)?
+** immediately after that node comes back?
+** for an extended period after that node comes back (long enough for the cluster to rebalance)
+ In particular, I think we want to know the change in throughput, tail latency, and errors.
+* how does a moderately heavy read-write workload run for an extended period (at least 24h, maybe a week)
+* similar questions for a few different actions:
+** kill -9 a node
+** OS panic a node
+** hardware reset a node
+** decommission a node
+** drain a node
+** introduce a partition around a node
+*** for just a little while
+*** for an extended period
+
+Next steps:
+
+* Make sure I know how to monitor SQL errors.
+* Figure out tests to answer my questions above.
