@@ -16,6 +16,55 @@
 *** 1-3 load generators
 * Successfully used Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].  You need to manually run `cockroach init --insecure --host ...` on one of them to get the cluster to come up.
 
+=== Planning notes
+
+Will use AWS to start playing with it.
+
+* Will use https://www.cockroachlabs.com/docs/v20.1/topology-basic-production["Basic Production"].
+* Make sure to use the https://www.cockroachlabs.com/docs/v20.1/cockroach-start#locality[locality] flag if we end up using different AZs.
+
+In terms of https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#software[host operating system]:
+
+> We recommend running a glibc-based Linux distribution and Linux kernel version from the last 5 years, such as Ubuntu, Red Hat Enterprise Linux (RHEL), CentOS, or Container-Optimized OS.
+
+We'll try illumos to see how it goes.
+
+https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#basic-hardware-recommendations[Basic hardware recommendations]: for each vCPU, it's recommended to expect 4 GiB of RAM, 60 GiB of storage, 500 disk IOPS, and 30 MBps of disk I/O.  Recommend at least 2 vCPUS and better would be 4 vCPUs per node.  Price out a 4-vCPU node?  Avoid "burstable" or "shared-core".  Use "m" (general-purpose) or "c" ("compute-optimized").  Recommend "c5d" for use with EBS using SSD instances.
+
+If we want to save cost significantly, we should shut down these instances when we don't actively need them to be running.  If we use "c5d", we'll probably lose local storage.  This would be a good reason to use "c5" with an EBS volume.  The perf will presumably be worse, but presumably not pathologically so, and we're more interested in ballpark / pathological figures than absolute best perf.  We probably don't need fantastic performance out of the gate to do basic fault testing, but we also don't want to see pathological behavior (e.g., due to starvation).
+
+Adam points out that illumos won't currently run on "c5" or other generations that require ENA networking, so we should stick with "c4" for now.
+
+https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#connection-pooling[Recommended connection pool size:] 2 * core count + ssd count.  It's unclear if this is a server-side figure or a client-side figure or what?
+
+Considerations for later:
+
+- file descriptor limit
+- cache size
+
+Load generators: There are several https://www.cockroachlabs.com/docs/v20.1/cockroach-workload.html[workload options].  Note that the workloads have a `--tolerate-errors` option.  Most promising seem like "bank", "kv", "tpcc", "ycsb".
+
+In terms of images, it looks like https://omniosce.org/setup/aws[AWS AMI images are available for recent versions of OmniOS].
+
+=== Calculating cost on AWS
+
+Requirements:
+
+* Use "c4large" for db and load generators (see above).
+* Grafana recommends 256 MiB memory + 1 CPU.
+* Prometheus seems to want 3 GiB of memory.
+* Do this all in "us-west-2" (cheaper than some other regions)
+
+Let's put Grafana + Prometheus in a single t3.medium instance.
+
+https://calculator.aws/#/estimate?id=16e6ed9a0102c9e24880a0175edaa9eef88ac8c9[Estimate:]
+
+* 6 "c4large" instances (3xCRDB + 3xload generators) with 60 GiB "gp2" storage each: $474 / month
+* 1 "t3.medium" instance (Prometheus + Grafana): $36 / month
+
+Total: $510 / month.  If we only use it for, say, 10 hours a week, that's only $30 / month.
+
+
 == 2020-08-26
 
 * fixed bugs in Terraform config
@@ -1493,3 +1542,1166 @@ Next steps:
 
 * Make sure I know how to monitor SQL errors.
 * Figure out tests to answer my questions above.
+
+
+== 2020-09-21
+
+Summary of the day:
+
+* Reviewed how reads and writes work in CockroachDB.  Tested this out to see how being a leaseholder affects throughput on that node.
+* Dug into load-based splitting and merging to understand the impact.
+* Dug a bit deeper into the metrics.  I know how to look for SQL failures now, as well as how to see splits and merges.
+* Revised README in this repo to reflect the work done so far and where to go from here.
+
+Details:
+
+The https://www.cockroachlabs.com/docs/v20.1/architecture/reads-and-writes-overview[architectural overview of reads and writes] explains that issuing reads or writes to the leaseholder of a range should avoid one internal network round-trips.  From my read, it wouldn't matter if you issued the request to a different node holding a replica for the range or not, as long as it wasn't the leaseholder.  One idea would be to try to empirically measure this, but I'm not sure how useful that is.
+
+Found and skimmed the https://wiki.crdb.io/wiki/spaces/CRDB/overview?homepageId=56197319[CRDB wiki] (got here looking for suggestions for performance testing).
+
+Plan for today:
+
+* Make sure I know how to monitor SQL errors.
+* Restart cluster.  Drop sbtest database and recreate it.
+* Start the workload and run it for like 10 minutes.  Figure out what range it's working on.  Figure out where the leaseholder for that range is.  Run the query for about 5 minutes each a few times on the leaseholder, another replica, and another cluster node.
+* Dig into when merging vs. splitting is better for load.
+
+Details:
+
+* Restarted cluster.  All nodes came up fine.
+* Dropped and recreated database "sbtest".  Looked at ranges:
+
+[source,text]
+----
+> show ranges from database sbtest;
+  table_name | start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+-------------+-----------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  sbtest1    | NULL      | NULL    |      115 |      2.151715 |            6 |                       | {4,5,6}  | {"","",""}
+  sbtest1    | NULL      | NULL    |      116 |      0.329636 |            6 |                       | {4,5,6}  | {"","",""}
+(2 rows)
+
+Time: 17.045268ms
+----
+
+There are two ranges (one for the table and one for the index?), both on leaseholder 6 (presumably n6, which is 192.168.1.190) and with replicas on nodes 4 and 5 (presumably n4 and n5, which are 192.168.1.152 and 192.168.1.103, respectively).
+
+For good measure, let's confirm our understanding of those ranges:
+
+[source,text]
+----
+root@192.168.1.227:26257/sbtest> SHOW TABLES;
+  schema_name | table_name | type
+--------------+------------+--------
+  public      | sbtest1    | table
+(1 row)
+
+Time: 8.173483ms
+
+root@192.168.1.227:26257/sbtest> SHOW INDEXES FROM sbtest1;
+  table_name | index_name | non_unique | seq_in_index | column_name | direction | storing | implicit
+-------------+------------+------------+--------------+-------------+-----------+---------+-----------
+  sbtest1    | primary    |   false    |            1 | id          | ASC       |  false  |  false
+  sbtest1    | k_1        |    true    |            1 | k           | ASC       |  false  |  false
+  sbtest1    | k_1        |    true    |            2 | id          | ASC       |  false  |   true
+(3 rows)
+
+Time: 8.326325ms
+
+root@192.168.1.227:26257/sbtest> SHOW RANGES FROM TABLE sbtest1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      115 |      2.151715 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 12.654598ms
+
+root@192.168.1.227:26257/sbtest> SHOW RANGES FROM INDEX sbtest1 @ k_1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      116 |      0.329636 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 13.490146ms
+----
+
+Good.
+
+Now, let's run workloads in the following sequence:
+
+- n6: 5 minutes (leaseholder)
+- n5: 5 minutes (non-leaseholder replica)
+- n3: 5 minutes (non-replica)
+- n2: 5 minutes (non-replica)
+- n4: 5 minutes (non-leaseholder replica)
+- n6: 5 minutes (leaseholder)
+
+Basic command:
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.214 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+So that suggests:
+
+[source,bash]
+----
+n2=192.168.1.214
+n3=192.168.1.66
+n4=192.168.1.152
+n5=192.168.1.103
+n6=192.168.1.190
+
+set -o errexit
+
+for host in $n6 $n5 $n3 $n2 $n4 $n6; do
+	echo "host: $host"
+	sysbench --threads=1 --time=300 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest --pgsql-host=$n6 oltp_insert run
+	sleep 60
+done
+----
+
+Result:
+
+[source,text]
+----
+$ bash load.sh
+2020-09-21T18:03:57Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37102
+        other:                           0
+        total:                           37102
+    transactions:                        37102  (123.67 per sec.)
+    queries:                             37102  (123.67 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      123.6707
+    time elapsed:                        300.0063s
+    total number of events:              37102
+
+Latency (ms):
+         min:                                    3.19
+         avg:                                    8.08
+         max:                                  124.42
+         95th percentile:                       10.65
+         sum:                               299930.37
+
+Threads fairness:
+    events (avg/stddev):           37102.0000/0.00
+    execution time (avg/stddev):   299.9304/0.00
+
+2020-09-21T18:09:57Z: host: 192.168.1.103
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37414
+        other:                           0
+        total:                           37414
+    transactions:                        37414  (124.71 per sec.)
+    queries:                             37414  (124.71 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      124.7104
+    time elapsed:                        300.0071s
+    total number of events:              37414
+
+Latency (ms):
+         min:                                    3.86
+         avg:                                    8.02
+         max:                                   78.27
+         95th percentile:                       10.84
+         sum:                               299932.03
+
+Threads fairness:
+    events (avg/stddev):           37414.0000/0.00
+    execution time (avg/stddev):   299.9320/0.00
+
+2020-09-21T18:15:57Z: host: 192.168.1.66
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37399
+        other:                           0
+        total:                           37399
+    transactions:                        37399  (124.66 per sec.)
+    queries:                             37399  (124.66 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      124.6603
+    time elapsed:                        300.0074s
+    total number of events:              37399
+
+Latency (ms):
+         min:                                    3.53
+         avg:                                    8.02
+         max:                                   68.68
+         95th percentile:                       10.46
+         sum:                               299931.79
+
+Threads fairness:
+    events (avg/stddev):           37399.0000/0.00
+    execution time (avg/stddev):   299.9318/0.00
+
+2020-09-21T18:21:57Z: host: 192.168.1.214
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37366
+        other:                           0
+        total:                           37366
+    transactions:                        37366  (124.55 per sec.)
+    queries:                             37366  (124.55 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      124.5527
+    time elapsed:                        300.0014s
+    total number of events:              37366
+
+Latency (ms):
+         min:                                    3.88
+         avg:                                    8.03
+         max:                                   71.34
+         95th percentile:                       11.04
+         sum:                               299926.44
+
+Threads fairness:
+    events (avg/stddev):           37366.0000/0.00
+    execution time (avg/stddev):   299.9264/0.00
+
+2020-09-21T18:27:57Z: host: 192.168.1.152
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37428
+        other:                           0
+        total:                           37428
+    transactions:                        37428  (124.76 per sec.)
+    queries:                             37428  (124.76 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      124.7568
+    time elapsed:                        300.0076s
+    total number of events:              37428
+
+Latency (ms):
+         min:                                    4.07
+         avg:                                    8.01
+         max:                                   75.42
+         95th percentile:                       11.04
+         sum:                               299932.50
+
+Threads fairness:
+    events (avg/stddev):           37428.0000/0.00
+    execution time (avg/stddev):   299.9325/0.00
+
+2020-09-21T18:33:57Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 1
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           37273
+        other:                           0
+        total:                           37273
+    transactions:                        37273  (124.24 per sec.)
+    queries:                             37273  (124.24 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      124.2423
+    time elapsed:                        300.0024s
+    total number of events:              37273
+
+Latency (ms):
+         min:                                    3.31
+         avg:                                    8.05
+         max:                                   58.86
+         95th percentile:                       10.27
+         sum:                               299926.12
+
+Threads fairness:
+    events (avg/stddev):           37273.0000/0.00
+    execution time (avg/stddev):   299.9261/0.00
+
+----
+
+After running this (which took about 40 minutes):
+
+* the requests were indeed handled by different nodes
+* the throughput was reasonably constant (125 inserts / second) regardless of which node we were using
+* It appeared that there was a merge at some point between ranges 115 and 116, because there's only one range associated with "sbtest" now and it's range 115.  It's still held on n6 with replicas on 4, 5, and 6.  From the metrics, the merge happened at about 18:45:30Z, which is after the last experiment.
+* Disk utilization was basically the same through all runs, and about 2x higher on db5 (n6) than all other nodes.  That's largely true for CPU utilization as well, though it bounced around a bit between nodes in different runs.
+* db3, db4, and db5 were consistently doing about 1K write IOPS, while the other nodes were doing basically none.
+* There was less network traffic when n6 was being hit.
+
+It seems like maybe the network round-trip was not the blocker.  That makes sense, as the p50 network RTT is about 800us.  p99 spiked up to at most 15ms.  By comparison, p95 SQL latency was about 10ms, with p99 about 18ms.
+
+Let's try the same thing with concurrency=4 to minimize the impact of waiting on the client.  I'm not going to wipe the database before this run.
+
+Results from this sequence:
+
+[source,text]
+----
+cockroachdb@loadgen0:~$ bash load.sh
+2020-09-21T20:02:11Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           255401
+        other:                           0
+        total:                           255401
+    transactions:                        255401 (851.33 per sec.)
+    queries:                             255401 (851.33 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      851.3275
+    time elapsed:                        300.0032s
+    total number of events:              255401
+
+Latency (ms):
+         min:                                    2.16
+         avg:                                    4.70
+         max:                                   56.52
+         95th percentile:                        7.84
+         sum:                              1199501.13
+
+Threads fairness:
+    events (avg/stddev):           63850.2500/25.78
+    execution time (avg/stddev):   299.8753/0.00
+
+2020-09-21T20:08:11Z: host: 192.168.1.103
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           210668
+        other:                           0
+        total:                           210668
+    transactions:                        210668 (702.22 per sec.)
+    queries:                             210668 (702.22 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      702.2183
+    time elapsed:                        300.0036s
+    total number of events:              210668
+
+Latency (ms):
+         min:                                    2.81
+         avg:                                    5.69
+         max:                                   63.35
+         95th percentile:                        8.43
+         sum:                              1199577.67
+
+Threads fairness:
+    events (avg/stddev):           52667.0000/214.72
+    execution time (avg/stddev):   299.8944/0.00
+
+2020-09-21T20:14:11Z: host: 192.168.1.66
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           223659
+        other:                           0
+        total:                           223659
+    transactions:                        223659 (745.52 per sec.)
+    queries:                             223659 (745.52 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      745.5164
+    time elapsed:                        300.0055s
+    total number of events:              223659
+
+Latency (ms):
+         min:                                    2.69
+         avg:                                    5.36
+         max:                                   66.33
+         95th percentile:                        7.98
+         sum:                              1199545.61
+
+Threads fairness:
+    events (avg/stddev):           55914.7500/84.28
+    execution time (avg/stddev):   299.8864/0.00
+
+2020-09-21T20:20:11Z: host: 192.168.1.214
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           218966
+        other:                           0
+        total:                           218966
+    transactions:                        218966 (729.88 per sec.)
+    queries:                             218966 (729.88 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      729.8776
+    time elapsed:                        300.0037s
+    total number of events:              218966
+
+Latency (ms):
+         min:                                    2.82
+         avg:                                    5.48
+         max:                                   71.20
+         95th percentile:                        7.98
+         sum:                              1199569.89
+
+Threads fairness:
+    events (avg/stddev):           54741.5000/63.66
+    execution time (avg/stddev):   299.8925/0.00
+
+2020-09-21T20:26:11Z: host: 192.168.1.152
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           212824
+        other:                           0
+        total:                           212824
+    transactions:                        212824 (709.40 per sec.)
+    queries:                             212824 (709.40 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      709.4044
+    time elapsed:                        300.0038s
+    total number of events:              212824
+
+Latency (ms):
+         min:                                    2.72
+         avg:                                    5.64
+         max:                                   72.86
+         95th percentile:                        8.28
+         sum:                              1199565.97
+
+Threads fairness:
+    events (avg/stddev):           53206.0000/86.02
+    execution time (avg/stddev):   299.8915/0.00
+
+2020-09-21T20:32:11Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            0
+        write:                           258800
+        other:                           0
+        total:                           258800
+    transactions:                        258800 (862.65 per sec.)
+    queries:                             258800 (862.65 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      862.6541
+    time elapsed:                        300.0044s
+    total number of events:              258800
+
+Latency (ms):
+         min:                                    2.21
+         avg:                                    4.63
+         max:                                  115.68
+         95th percentile:                        7.70
+         sum:                              1199494.31
+
+Threads fairness:
+    events (avg/stddev):           64700.0000/72.58
+    execution time (avg/stddev):   299.8736/0.00
+
+----
+
+In this run, we did see a clear difference between writes to the leaseholder vs. writes to other nodes, with no real difference among the other nodes.  Summary:
+
+[source,text]
+----
+RAW RESULTS (5-minute average TPS, from raw output above):
+
+    192.168.1.190 851.3275
+    192.168.1.103 702.2183
+    192.168.1.66  745.5164
+    192.168.1.214 729.8776
+    192.168.1.152 709.4044
+    192.168.1.190 862.65
+
+BY NODE:
+
+    IP             NODE  ROLE        TPS (multiple runs)
+    192.168.1.190  n6    leaseholder 863 851
+    192.168.1.103  n5    replica     702
+    192.168.1.66   n3    general     746
+    192.168.1.214  n2    general     730
+    192.168.1.152  n4    replica     709
+
+BY ROLE ONLY:
+
+    ROLE        TPS (multiple runs)
+    leaseholder 863 851
+    replica     702 709
+    general     746 730
+
+----
+
+Indeed, the leaseholder performs at least 14% - 23% better than the other nodes.  Surprisingly, replicas do a bit worse than non-replicas.
+
+Other notes from this experiment:
+
+* The throughput-per-node graph confirms that we hit different nodes.
+* Disk %busy remained at or below 60% on all nodes, with n6 by far being the busiest (as before).  Plenty of headroom in that sense.
+* CPU utilization remained at or below about 60% on all CPUs, so plenty of headroom there.
+* As before, the three replica nodes were pegged at about 1K write IOPS, with no read IOPS going on and no activity on the other three nodes.
+* We were much better at keeping the pipeline full: the average active queries remained above 2 for the duration, with few exceptions.
+
+Finally, check on the ranges to make sure they didn't change during the test:
+
+[source,text]
+----
+root@192.168.1.227:26257/sbtest> show ranges from table sbtest1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      115 |    400.569721 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 11.999547ms
+
+root@192.168.1.227:26257/sbtest> show ranges from index sbtest1 @ primary;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      115 |    400.569721 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 12.867224ms
+
+root@192.168.1.227:26257/sbtest> show ranges from index sbtest1 @ k_1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      115 |    400.569721 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 12.278072ms
+
+root@192.168.1.227:26257/sbtest> show ranges from database sbtest;
+  table_name | start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+-------------+-----------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  sbtest1    | NULL      | NULL    |      115 |    400.569721 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 10.485938ms
+----
+
+That looks good -- same state as before.
+
+=== Read performance against leaseholder vs. replica vs. other
+
+Now, I want to try the same experiment again for a read-heavy workload.  I've modified the script to run `oltp_point_select` instead of `oltp_insert`:
+
+[source,bash]
+----
+#!/bin/bash
+
+n2=192.168.1.214
+n3=192.168.1.66
+n4=192.168.1.152
+n5=192.168.1.103
+n6=192.168.1.190
+
+set -o errexit
+
+for host in $n6 $n5 $n3 $n2 $n4 $n6; do
+        echo "$(date +%FT%TZ): host: $host"
+        sysbench --threads=4 --time=300 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest --pgsql-host=$host oltp_point_select run
+        sleep 60
+done
+----
+
+To run this, I'm going to drop the database first and recreate it, which means re-checking the ranges:
+
+[source,text]
+----
+$ sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_point_select prepare
+WARNING: Both event and time limits are disabled, running an endless test
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Creating table 'sbtest1'...
+Inserting 10000 records into 'sbtest1'
+Creating a secondary index on 'sbtest1'...
+cockroachdb@loadgen0:~$ 
+----
+
+Here are the resulting schemas and ranges:
+
+[source,text]
+----
+root@192.168.1.227:26257/defaultdb> SHOW RANGES FROM DATABASE sbtest;
+  table_name | start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+-------------+-----------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  sbtest1    | NULL      | NULL    |      117 |      2.151715 |            6 |                       | {4,5,6}  | {"","",""}
+  sbtest1    | NULL      | NULL    |      118 |      0.329636 |            6 |                       | {4,5,6}  | {"","",""}
+(2 rows)
+
+Time: 12.807122ms
+
+root@192.168.1.227:26257/defaultdb> use sbtest;
+SET
+
+Time: 3.329146ms
+
+root@192.168.1.227:26257/sbtest> show ranges from table sbtest1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      117 |      2.151715 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 13.086509ms
+
+root@192.168.1.227:26257/sbtest> show ranges from index sbtest1 @ primary;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      117 |      2.151715 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 12.772464ms
+
+root@192.168.1.227:26257/sbtest> show ranges from index sbtest1 @ k_1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      118 |      0.329636 |            6 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 12.971536ms
+
+root@192.168.1.227:26257/sbtest> SHOW TABLES;
+  schema_name | table_name | type
+--------------+------------+--------
+  public      | sbtest1    | table
+(1 row)
+
+Time: 8.281401ms
+
+root@192.168.1.227:26257/sbtest> show index from sbtest1;
+  table_name | index_name | non_unique | seq_in_index | column_name | direction | storing | implicit
+-------------+------------+------------+--------------+-------------+-----------+---------+-----------
+  sbtest1    | primary    |   false    |            1 | id          | ASC       |  false  |  false
+  sbtest1    | k_1        |    true    |            1 | k           | ASC       |  false  |  false
+  sbtest1    | k_1        |    true    |            2 | id          | ASC       |  false  |   true
+(3 rows)
+
+Time: 8.101588ms
+
+----
+
+We got new ranges, but they're on the same nodes, with the same leaseholder, so we can use the same load.sh script (changing the workload).
+
+Here are the detailed results:
+
+[source,text]
+----
+$ time bash load.sh
+2020-09-21T20:59:58Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            1383060
+        write:                           0
+        other:                           0
+        total:                           1383060
+    transactions:                        1383060 (4610.17 per sec.)
+    queries:                             1383060 (4610.17 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      4610.1706
+    time elapsed:                        300.0019s
+    total number of events:              1383060
+
+Latency (ms):
+         min:                                    0.48
+         avg:                                    0.87
+         max:                                   41.97
+         95th percentile:                        1.39
+         sum:                              1199127.44
+
+Threads fairness:
+    events (avg/stddev):           345765.0000/447.71
+    execution time (avg/stddev):   299.7819/0.00
+
+2020-09-21T21:05:58Z: host: 192.168.1.103
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            689759
+        write:                           0
+        other:                           0
+        total:                           689759
+    transactions:                        689759 (2299.18 per sec.)
+    queries:                             689759 (2299.18 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      2299.1810
+    time elapsed:                        300.0020s
+    total number of events:              689759
+
+Latency (ms):
+         min:                                    0.94
+         avg:                                    1.74
+         max:                                   32.18
+         95th percentile:                        2.39
+         sum:                              1199594.98
+
+Threads fairness:
+    events (avg/stddev):           172439.7500/269.51
+    execution time (avg/stddev):   299.8987/0.00
+
+2020-09-21T21:11:58Z: host: 192.168.1.66
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            1380248
+        write:                           0
+        other:                           0
+        total:                           1380248
+    transactions:                        1380248 (4600.80 per sec.)
+    queries:                             1380248 (4600.80 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      4600.8011
+    time elapsed:                        300.0017s
+    total number of events:              1380248
+
+Latency (ms):
+         min:                                    0.48
+         avg:                                    0.87
+         max:                                   31.00
+         95th percentile:                        1.39
+         sum:                              1199145.44
+
+Threads fairness:
+    events (avg/stddev):           345062.0000/813.18
+    execution time (avg/stddev):   299.7864/0.00
+
+2020-09-21T21:17:58Z: host: 192.168.1.214
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            649948
+        write:                           0
+        other:                           0
+        total:                           649948
+    transactions:                        649948 (2166.48 per sec.)
+    queries:                             649948 (2166.48 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      2166.4816
+    time elapsed:                        300.0016s
+    total number of events:              649948
+
+Latency (ms):
+         min:                                    0.96
+         avg:                                    1.85
+         max:                                   37.94
+         95th percentile:                        2.57
+         sum:                              1199618.76
+
+Threads fairness:
+    events (avg/stddev):           162487.0000/99.93
+    execution time (avg/stddev):   299.9047/0.00
+
+2020-09-21T21:23:58Z: host: 192.168.1.152
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            692496
+        write:                           0
+        other:                           0
+        total:                           692496
+    transactions:                        692496 (2308.30 per sec.)
+    queries:                             692496 (2308.30 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      2308.3036
+    time elapsed:                        300.0021s
+    total number of events:              692496
+
+Latency (ms):
+         min:                                    0.94
+         avg:                                    1.73
+         max:                                  114.17
+         95th percentile:                        2.39
+         sum:                              1199590.33
+
+Threads fairness:
+    events (avg/stddev):           173124.0000/235.70
+    execution time (avg/stddev):   299.8976/0.00
+
+2020-09-21T21:29:58Z: host: 192.168.1.190
+sysbench 1.1.0-bbee5d5 (using bundled LuaJIT 2.1.0-beta3)
+
+Running the test with following options:
+Number of threads: 4
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            724305
+        write:                           0
+        other:                           0
+        total:                           724305
+    transactions:                        724305 (2414.32 per sec.)
+    queries:                             724305 (2414.32 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+Throughput:
+    events/s (eps):                      2414.3216
+    time elapsed:                        300.0035s
+    total number of events:              724305
+
+Latency (ms):
+         min:                                    0.93
+         avg:                                    1.66
+         max:                                   35.97
+         95th percentile:                        2.22
+         sum:                              1199568.27
+
+Threads fairness:
+    events (avg/stddev):           181076.2500/116.19
+    execution time (avg/stddev):   299.8921/0.00
+
+
+real    36m0.207s
+user    0m48.721s
+sys     1m44.241s
+----
+
+Check range status:
+
+[source,text]
+----
+root@192.168.1.227:26257/sbtest> show ranges from table sbtest1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      117 |      2.151715 |            3 |                       | {3,5,6}  | {"","",""}
+(1 row)
+
+Time: 121.712751ms
+
+root@192.168.1.227:26257/sbtest>  show ranges from index sbtest1 @ primary;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      117 |      2.151715 |            3 |                       | {3,5,6}  | {"","",""}
+(1 row)
+
+Time: 13.173433ms
+
+root@192.168.1.227:26257/sbtest> show ranges from index sbtest1 @ k_1;
+  start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+------------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  NULL      | NULL    |      118 |      0.329636 |            4 |                       | {4,5,6}  | {"","",""}
+(1 row)
+
+Time: 14.280008ms
+
+root@192.168.1.227:26257/sbtest> SHOW ranges from database sbtest;
+  table_name | start_key | end_key | range_id | range_size_mb | lease_holder | lease_holder_locality | replicas | replica_localities
+-------------+-----------+---------+----------+---------------+--------------+-----------------------+----------+---------------------
+  sbtest1    | NULL      | NULL    |      117 |      2.151715 |            3 |                       | {3,5,6}  | {"","",""}
+  sbtest1    | NULL      | NULL    |      118 |      0.329636 |            4 |                       | {4,5,6}  | {"","",""}
+(2 rows)
+
+Time: 13.843042ms
+----
+
+Unfortunately, this output means that range 117's lease was moved to n3 -- which explains some of the results I got:
+
+[source,text]
+----
+NODE               QPS   STARTED AT
+n6   192.168.1.190 4610  20:59:58Z
+n5   192.168.1.103 2299  21:05:58Z
+n3   192.168.1.66  4601  21:11:58Z
+n2   192.168.1.214 2166  21:17:58Z
+n4   192.168.1.152 2308  21:23:58Z
+n6   192.168.1.190 2414  21:29:58Z 
+----
+
+(That's pulled out of the output above by hand.)
+
+Based on the metrics in the Admin UI, I believe we have:
+
+[source,text]
+----
+21:00:00 split, add, remove, load-based lease transfer
+21:05:30 split, add, remove, lease transfer (non-load-based)
+21:12:00 split + load-based lease transfer
+21:17:30 range merge
+----
+
+It's a little hard to know what happened there.  Let's take a closer look at ranges 117 and 118.
+
+Range 117:
+
+[source,text]
+----
+20:57:17Z split 115 -> 117
+20:57:20Z split 117 -> 118
+21:00:00Z split 117 -> 119
+21:00:21Z add n3, remove n4 (reason: rebalance)
+21:05:52Z merge r117 with r119 (this is the first event labeled for store "s3" instead of "s6")
+21:12:09Z split r117 into r135
+21:17:27Z merge r117 with r135
+21:57:24Z merge r117 with 4118
+----
+
+If we look at the lease history there, we see it on n6 from 17:42:08 to 21:01:23.  Reading between the lines, it seems like we split the range around 21:00 and moved the lease to n3.  My guess is that we split the range due to load and then moved one of the two halves to another node, and this was the half that got moved.
+
+If we merge this timeline with our results above, we have:
+
+[source,text]
+----
+NODE               QPS   STARTED AT  ROLE
+n6   192.168.1.190 4610  20:59:58Z   initially leaseholder, changed to replica while running
+n5   192.168.1.103 2299  21:05:58Z   replica
+n3   192.168.1.66  4601  21:11:58Z   leaseholder
+n2   192.168.1.214 2166  21:17:58Z   general
+n4   192.168.1.152 2308  21:23:58Z   replica
+n6   192.168.1.190 2414  21:29:58Z   replica
+----
+
+The trend remains fairly clear that reads from the leaseholder are quite a lot faster than from other nodes in the cluster.  This experiment is as controlled as we'd like, and we could potentially improve it by disabling load-based splitting or rebalancing, but this is consistent enough with the documentation that it's probably not worth exploring further.
+
+=== Notes on performance, splits, and merges
+
+Meanwhile: looking at https://www.cockroachlabs.com/docs/stable/load-based-splitting.html[load-based splitting] again.  It seems the main purpose is take a range that's hot, but where the load is distributed across at least two keys, and split it into two ranges that can then be https://www.cockroachlabs.com/docs/v20.1/architecture/replication-layer#load-based-replica-rebalancing[rebalanced] onto other nodes so that the load is split between two nodes.  According to that first source, CockroachDB won't split a range on which queries would have to hit both ranges after the split, since that's more expensive.
+
+What about https://www.cockroachlabs.com/docs/stable/range-merges.html[merges]?  It looks like Cockroach only merges ranges based on size, not load.  This behavior does improve performance because the fewer ranges a query has to deal with, the fewer network round-trip times and other per-range overhead costs are needed, plus it's less likely to hit a non-functional or overloaded node.
+
+It looks to me that if a workload is heavily concentrated on one key, splitting can't help.  You'll be limited to the capacity of a single node -- but in principle that entire node can be dedicated to that key, if it's really that hot.
+
+I asked above how one can tell of splitting or merging will be good for performance.  I'm not sure there's an easy way to tell.  I do not see a great way to look at queries per range.  You _can_ look at range size, which will tell you when something might be a candidate for merging.
+
+I decided to take a closer look at the metrics available -- there's lots of good stuff here, including pending merges and splits, etc.  New question, though: what's the difference between sql_exec_latency (SQL "statement" execution) and sql_service_latency (SQL "request" execution)?  I don't see any metrics with "range" as a label, so I don't think you can get queries per range out of Prometheus.
+
+=== Next steps
+
+Tactical steps:
+
+* update dashboards
+** show sql_exec_failures
+** add graph of range splits, merges, etc.
+* go through my notes up to this point and see if there are unexplained issues that need to be noted for further investigation (or just marked caveats)
+
+The experiments from the last few days have helped me come to ground on some of my questions about testing from 9/18:
+
+* Performance _does_ differ depending on whether the gateway node (that receives the request) is the leaseholder or not.  This means that performance can easily change during an experiment as CockroachDB splits ranges, merges them, and moves them as part of rebalancing.
+* I don't fully understand haproxy's load balancing behavior well enough to rely on it during testing.  As a result, I'm pointing each load generator at individual CockroachDB nodes.  This too complicates testing things like horizontal scalability (increased throughput as the cluster expands), since we have to add or redirect load generators in order to use new capacity.
+
+I revised the README to reflect the bigger directions we want to think about.

@@ -9,53 +9,79 @@ See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requireme
 
 == Current status
 
-Successfully using Terraform to provision a 3-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].
+Again, see RFD 53 for context.
 
-Plan (again, see RFD 53):
+The code in this repo uses Terraform to provision a multi-node CockroachDB cluster on AWS, using OmniOS and https://sysmgr.org/~jclulow/tmp/cockroach.tar.gz[Joshua's CRDB binaries].  This covers:
 
-* Go through some basic docs:
-** Tutorials, starting with https://www.cockroachlabs.com/docs/v20.1/demo-replication-and-rebalancing.html[Replication and rebalancing]
-* Maybe some even more basic testing
-** behavior using haproxy as a load balancer when queries just take a while
-** can we reproduce the basic sysbench results on their website?
-** can we reproduce any other benchmarking results on their website?
-** can we run one of those for an extended period?
-* Basic testing
-** Look at 'SHOW RANGES FROM TABLE ... '
-** Look at 'SHOW RANGES FROM INDEX ... '
-** See queries with "SHOW QUERIES", etc.
-** See performance in metrics
-** Inject some failures and see what it looks like -- to the load generator as
-   well as in metrics
-*** graceful restarts
-*** kill -9
-*** hard reset OS
-*** network partition
-** Check on results:
-*** what do the load generators see?
-*** what do the server instances see?
-*** what do the metrics see?
-* Deeper testing
-** Test cold start
-** Test partition
-** What happens if lots of data is written during an extended outage or partition
-** Replication -- part or all of the namespace
-** Backup / restore
-** Scale out
-** Scale down?
-** Decommissioning a node (`cockroach node decommission`)
-** Draining a node (`cockroach node drain`)
-** Rolling upgrade
-** Use "debug" commands to poke at internals
-** Changefeed?  Explore for backup or other DR?
-* Exercise Rust postgresql client
-* Debugging known pathologies
-** e.g., a range that needs to be split using https://www.cockroachlabs.com/docs/v20.1/split-at[split-at] because of load
-* Lower priority:
-** Clocks going backwards?
-** Go through https://www.cockroachlabs.com/docs/v20.1/performance.html[perf tuning exercises] in detail
+* terraform configuration to deploy the whole thing
+* working illumos builds (and configuration and SMF manifests) for:
+** cockroachdb
+** Prometheus
+** Grafana
+** sysbench
+** chrony
+** Prometheus's node_exporter
+* monitoring:
+** generic VM metrics: boot time, CPU utilization, etc.
+** illumos-specific metrics: I/O latency and utilization, network throughput
+** CockroachDB metrics
+** Grafana and Prometheus metrics
+** many of these use AWS-based service discovery
 
-== Usage synopsis
+We've gained a bunch of basic operational experience about CockroachDB:
+
+* general: starting/stopping nodes, pulling metrics, understanding the key ones
+* running workloads with both `cockroach workload` and `sysbench`
+* observing behavior using the metrics available
+* expanding the cluster
+* decommissioning nodes
+* directing load to individual nodes
+* ranges: replicas, splits, merges, rebalancing, reading through range history, basic metrics, availability, using commands to observe them (`SHOW RANGES ...`)
+
+We've learned a bit about it too:
+
+* Very broadly, CockroachDB has worked well.
+** To my knowledge, it hasn't crashed except because of NTP sync.  Since deploying chrony, that's only ever happened on boot, and not most of the time.  (That problem has not been root-caused.)  (That said, it _is_ very sensitive to NTP sync and we'll need to operationalize this well.)
+** Generally, it's worked as advertised: we've brought up new nodes, decomissioned nodes, etc., and it's mostly worked fine.
+* Performance can vary somewhat significantly (10% to 100%) when requests are issued directly to the leaseholder of a range vs. issued to some other node.  Further, CockroachDB dynamically adds new ranges, splits existing ranges, merges existing ranges, and rebalances ranges for both storage and load.  These two behaviors are both reasonable, but they complicate the testing process significantly if you're looking at absolute performance numbers because considerable variation is possible even when you haven't made any changes to the workload (because of these background changes).
+* We ran into issues early on using haproxy as a client-side load balancer.  These aren't necessarily bugs nor deal-breakers, but we switched to directing each load generator at a specific cluster instance to better control and understand what was going on.
+* Not related to CockroachDB but AWS: "gp2" storage volumes have significantly better performance for the first 5.4M IOPS after boot, which can easily be several hours.  After that, their rate is very inconsistent unless you're consistently saturating the max rate for your volume size.  These are unsuitable for our testing.
+
+== Next steps
+
+There are several tests we'd still like to run.  These are largely the same questions we started with, but we understand enough now to formulate them into something testable:
+
+* Are our existing sysbench numbers in line with what CockroachDB reports?
+* Online expansion: verify that when clients are pointing at specific nodes, if we expand the cluster, there's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly.  (Based on experience so far, there may be an initial brief spike in latency (and dip in throughput) and overall throughput may go down a bit because some ranges are now remote that were previously local to some nodes.)
+* Online contraction: verify that when clients are pointing at specific nodes, if we stop the load generator(s) for one node and decommission the node, then here's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly more than was caused by just shutting down the load generator.
+* Horizontal scalability (_not_ online):
+** Start by ramping up client load until we reach something reasonably heavy and evenly distributed across nodes.
+** Increase the size of the cluster and add a new load generator for the new node.  We should see comparable latency, and overall throughput should increase nearly linearly.
+** Continue until we reach 2x or 3x the initial cluster size.
+** Critically: we're separating the testing of online expansion vs. performance after expansion because as we've learned, it's hard to control enough variables (particularly the client workloads) to combine these tests.
+* Sustained heavy workload with a database larger than DRAM.  Take the 1x from above and run it for an extended period: at least 24 hours, and maybe a week.
+* Absolute performance numbers (ballpark).  This is hard, given all the changes the cluster makes, and also given that we're not using top-notch hardware.  But we probably only need order-of-magnitude understanding here.  Maybe see whether latency and throughput stabilize towards the end of the sustained heavy workload test, and if so, use those numbers.
+* General fault testing: `kill -9`, OS panic, hardware reset, network partition.  These may induce some latency bubbles or errors for a brief time, but the system should recover on its own.  Ideally, the bubbles and errors will be limited only to in-flight requests.
+* Special fault testing: see 9/18 notes: transient and extended outages, lots of data written during an extended outage or partition
+
+For all of these tests, ideally we want to look at what the load generators see, what the server instances see, and what the metrics report.
+
+If we get that far and things go well, we'll probably feel pretty good about things.  Items that we might want to test, but we're currently deferring:
+
+* haproxy as a load balancer: we'll likely want to build a cueball-like connection pool on the client.  If haproxy can work instead, that may be a bonus.
+* online schema changes: these are supposedly fine, traditionally painful everywhere, and probably time-consuming to test well in this context
+* rolling upgrade: similar to schema changes
+* Rust PostgreSQL client: we'll need this to work well, but it seems unlikely that another technology's client is better than the PostgreSQL one _and_ that we'd pick that technology for that reaso
+* Clocks going backwards?
+
+Other things we'll want to think through:
+
+* Backup / restore.  (Does Changefeed help here?)
+* Replication of part of the namespace elsewhere?  Does the fact that CockroachDB already replicates ranges (and can drain/decommission nodes) basically cover this, on the grounds that we can use that to move instances between servers, racks, filesystems, etc.?  Check with Arjen about this.
+* When would a range need to be split using https://www.cockroachlabs.com/docs/v20.1/split-at[split-at] because of load?
+** Go through https://www.cockroachlabs.com/docs/v20.1/performance.html[perf tuning exercises] in detail?
+
+== Using this repo
 
 To deploy a cluster, you need to have:
 
@@ -96,59 +122,15 @@ $ ssh root@$LOADGEN_PUBLIC_IP
 $ configure_cluster --host DB_PRIVATE_IP
 ----
 
-== Planning notes
-
-Will use AWS to start playing with it.
-
-* Will use https://www.cockroachlabs.com/docs/v20.1/topology-basic-production["Basic Production"].
-* Make sure to use the https://www.cockroachlabs.com/docs/v20.1/cockroach-start#locality[locality] flag if we end up using different AZs.
-
-In terms of https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#software[host operating system]:
-
-> We recommend running a glibc-based Linux distribution and Linux kernel version from the last 5 years, such as Ubuntu, Red Hat Enterprise Linux (RHEL), CentOS, or Container-Optimized OS.
-
-We'll try illumos to see how it goes.
-
-https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#basic-hardware-recommendations[Basic hardware recommendations]: for each vCPU, it's recommended to expect 4 GiB of RAM, 60 GiB of storage, 500 disk IOPS, and 30 MBps of disk I/O.  Recommend at least 2 vCPUS and better would be 4 vCPUs per node.  Price out a 4-vCPU node?  Avoid "burstable" or "shared-core".  Use "m" (general-purpose) or "c" ("compute-optimized").  Recommend "c5d" for use with EBS using SSD instances.
-
-If we want to save cost significantly, we should shut down these instances when we don't actively need them to be running.  If we use "c5d", we'll probably lose local storage.  This would be a good reason to use "c5" with an EBS volume.  The perf will presumably be worse, but presumably not pathologically so, and we're more interested in ballpark / pathological figures than absolute best perf.  We probably don't need fantastic performance out of the gate to do basic fault testing, but we also don't want to see pathological behavior (e.g., due to starvation).
-
-Adam points out that illumos won't currently run on "c5" or other generations that require ENA networking, so we should stick with "c4" for now.
-
-https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#connection-pooling[Recommended connection pool size:] 2 * core count + ssd count.  It's unclear if this is a server-side figure or a client-side figure or what?
-
-Considerations for later:
-
-- file descriptor limit
-- cache size
-
-Load generators: There are several https://www.cockroachlabs.com/docs/v20.1/cockroach-workload.html[workload options].  Note that the workloads have a `--tolerate-errors` option.  Most promising seem like "bank", "kv", "tpcc", "ycsb".
-
-In terms of images, it looks like https://omniosce.org/setup/aws[AWS AMI images are available for recent versions of OmniOS].
-
-=== Calculating cost on AWS
-
-Requirements:
-
-* Use "c4large" for db and load generators (see above).
-* Grafana recommends 256 MiB memory + 1 CPU.
-* Prometheus seems to want 3 GiB of memory.
-* Do this all in "us-west-2" (cheaper than some other regions)
-
-Let's put Grafana + Prometheus in a single t3.medium instance.
-
-https://calculator.aws/#/estimate?id=16e6ed9a0102c9e24880a0175edaa9eef88ac8c9[Estimate:]
-
-* 6 "c4large" instances (3xCRDB + 3xload generators) with 60 GiB "gp2" storage each: $474 / month
-* 1 "t3.medium" instance (Prometheus + Grafana): $36 / month
-
-Total: $510 / month.  If we only use it for, say, 10 hours a week, that's only $30 / month.
 
 == Known issues
 
-* Before you've initialized the CRDB cluster, if you go to the adminui, you get
-a very blank 404 page
-* CockroachDB crashes pretty roughly when the clocks go out of sync.
+* cockroachdb: We're currently working on a build from master from the summer.  We should switch to a release build and make sure we're exercising Pebble.  (We are exercising Pebble now, but if we switch to the latest release as of this writing, we will be back on RocksDB.)
+* cockroachdb: Readline functionality (e.g., up arrow to see previous command) doesn't work in `cockroach sql` shell
+* this repo: None of this is currently easily reproducible from scratch because setting up the VMs relies on several tarballs built from this repo, but the contents of them don't exist in this repo (because it would involve checking in a bunch of large binaries that we don't want to carry on forever).  The best solution I've come up with for this is to put these binaries into a submodule that's incorporated here.  That way, people casually working on the repo don't need to download these binaries (and we don't necessarily need to download them forever when we clone, even if we change the way all this works), but it'll still all be present.
+* chrony setup: Sometimes a cold start of the VMs leaves CockroachDB in maintenance, having crashed because its clock was too far out of sync.  This should not be possible because we're starting chrony and configuring it to wait until it has successfully sync'd the clock (with step, not slew) _before_ starting CockroachDB on all nodes.  Still, it happens sometimes.
+* cockroachdb: Before you've initialized the CRDB cluster, if you go to the adminui, you get a very blank 404 page
+
 
 == General notes
 
