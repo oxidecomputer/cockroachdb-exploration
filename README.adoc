@@ -130,6 +130,8 @@ $ configure_cluster --host DB_PRIVATE_IP
 * this repo: None of this is currently easily reproducible from scratch because setting up the VMs relies on several tarballs built from this repo, but the contents of them don't exist in this repo (because it would involve checking in a bunch of large binaries that we don't want to carry on forever).  The best solution I've come up with for this is to put these binaries into a submodule that's incorporated here.  That way, people casually working on the repo don't need to download these binaries (and we don't necessarily need to download them forever when we clone, even if we change the way all this works), but it'll still all be present.
 * chrony setup: Sometimes a cold start of the VMs leaves CockroachDB in maintenance, having crashed because its clock was too far out of sync.  This should not be possible because we're starting chrony and configuring it to wait until it has successfully sync'd the clock (with step, not slew) _before_ starting CockroachDB on all nodes.  Still, it happens sometimes.
 * cockroachdb: Before you've initialized the CRDB cluster, if you go to the adminui, you get a very blank 404 page
+* terraform: we sometimes hit: https://github.com/terraform-providers/terraform-provider-aws/issues/12533. Retrying `terraform apply` has worked around the issue.
+* cockroachdb: I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.  https://www.youtube.com/watch?v=xUw8dN-yJU4&feature=emb_logo[There's a good, short video showing the data in these bundles.]
 
 
 == General notes
@@ -176,13 +178,9 @@ aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 
 * Currently https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#storage[limited to 4 TiB of storage per node].
 * https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#load-balancing[They expect clients to load balance for performance and reliability.]
 * Regarding https://news.ycombinator.com/item?id=20098942[use of something like ZFS snapshots for backup].
-* I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.
 * https://www.cockroachlabs.com/docs/v20.1/known-limitations.html#cold-starts-of-large-clusters-may-require-manual-intervention[Ugly looking bug around cluster startup]
 * https://www.cockroachlabs.com/docs/v20.1/rename-table#table-renaming-considerations[Table renaming is not transactional]
 
-Regarding the Terraform deployment: note that we sometimes hit:
-https://github.com/terraform-providers/terraform-provider-aws/issues/12533
-Retrying `terraform apply` has worked around the issue.
 
 == References
 
