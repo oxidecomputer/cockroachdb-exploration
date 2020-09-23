@@ -568,8 +568,6 @@ Time: 12.48402931s
 
 Details on that https://www.cockroachlabs.com/docs/stable/common-errors.html#context-deadline-exceeded[context deadline exceeded] error.
 
-The database is at least 4 GiB now, although ycsb is only 1.6 GiB (maybe that's logical?)
-
 The database is at least 4 GiB now, although ycsb is only 1.6 GiB (maybe that's logical?).  There's only one range, though.
 
 Resuming with:
@@ -855,7 +853,7 @@ Note: Prometheus didn't pick up the new node right away.  Maybe a better methodo
 
 17:22:45: restarted Prometheus
 
-Note: replication started around 17:12:30 and finished around 17:25:Z.
+Note: replication started around 17:12:30 and finished around 17:25Z.
 
 At 17:30Z, I'm going to restart the load generator to force it to pick up all four nodes.
 
@@ -2705,3 +2703,255 @@ The experiments from the last few days have helped me come to ground on some of 
 * I don't fully understand haproxy's load balancing behavior well enough to rely on it during testing.  As a result, I'm pointing each load generator at individual CockroachDB nodes.  This too complicates testing things like horizontal scalability (increased throughput as the cluster expands), since we have to add or redirect load generators in order to use new capacity.
 
 I revised the README to reflect the bigger directions we want to think about.
+
+== 2020-09-22
+
+Summary of the day:
+
+* updated dashboard.
+** show sql_exec_failures.
+** add graph of range splits, merges, etc.
+** add graph of queries by store.
+* went through my notes up to this point and collected outstanding issues.  Added these to the README list.
+* Completed an "online expansion" experiment that went well, but was limited.  See Conclusions below.
+* Completed an "online contraction" experiment that went well, but was limited.  See Conclusions below.
+* Started creating a much bigger database.
+
+=== Summary of online expansion experiment
+
+[source,text]
+----
+17:06Z Deployed a fresh cluster: 6 VMs, only started CockroachDB on 3 of them.
+17:26Z Started 50% read / 50% write "kv" workload against db1 (n1)
+17:34Z Started 50% read / 50% write "kv" workload against db2 (n2)
+17:39Z Started 50% read / 50% write "kv" workload against db3 (n3)
+18:05Z Bring up db4.  Rebalancing visible until about 18:06Z.
+18:19Z Bring up db5.  Rebalancing visible until about 18:21Z.
+19:54Z Bring up db6.  Rebalancing visible until about 19:56Z.
+20:25Z End of experiment -- writing up summary.
+----
+
+Summary of impact:
+
+* Throughput:
+** Aggregate throughput started around 2500 qps (evenly split between "select" and "insert") and declined over about 90 minutes to about 2000 qps.
+** Throughput on db1 is consistently about 15% higher than the other two nodes, which are about equal.  This is consistent with db1 being the leaseholder for the ranges being queried.  I confirmed via Admin UI that db1 is seeing nearly all of the queries.
+** For the entire period, across all three load generators, throughput reported is 441+336+344 reads per second and 442+336+344 writes per second, which is 1121 total reads per second and 1122 writes per second, or 2243 queries per second.  Grafana reports 2,176 queries per second (from the server) for the same period (1,088 reads and 1,099 writes) -- it's good that these are consistent.
+* Latency:
+** Matches what you'd expect given the throughput graph.
+** p95 latency for db1 is slightly better than the other two, which are about the same.  p95 ranges from about 8ms-11ms.  p99 has one major outlier from db1 up to 1.3s around 18:47Z.  There are two other excursions to 60ms and 160ms.  Ignoring these three, p99 ranged from about 14ms - 18ms, quite consistently, with db1 being slightly better than the other two.
+* Errors:
+** CockroachDB reported zero SQL failures.
+** All three client load generators reported zero errors.
+* Utilization and saturation
+** CPU: the busiest CPUs were the two CPUs on db1, which are about 80-88% busy.  The other nodes are around 40% or less busy.
+** Disk: average I/O time saw one excursion up to 4.7ms and a few up to 2ms, but averaged under 600us.  Disks got less busy over time, starting around 65% busy on db1 at the beginning and falling to about 45-50% busy.  Average write throughput is only about 2-3 MBps per node -- it's not a heavy workload.  We're hitting the max write IOPS of 1K most of the time on db1 and db2.  Other nodes are less busy.
+** Network: throughput is fairly minimal (averaging under 1 MBps on all nodes).
+* Other notes:
+** The workload is pretty small.  The nodes are still 98.8% free in terms of disk space and the database is only 880 MiB.
+** p99 CockroachDB heartbeat latency peaked below 60ms.
+** Mean RPC clock offset peaked around 550us.
+** We can clearly see the rebalancing happen in the change in replicas per node.
+** We do see some miscellaneous range operations from time to time (splits, adds, removes, merges).
+** There's a jump in under-replicated ranges around 18:20Z.  I suspect what happened is that we brought up the fifth node, which caused CockroachDB to flip its default replication factor for system ranges from 3 to 5, and then immediately replicate those ranges.
+
+Overall this feels very successful.  I believe this workload is mainly 1-byte reads and writes, so it's heavy on operations, but not heavy on data throughput.  The load is clearly not well distributed -- it's nearly all being handled by db1.
+
+There was that big latency outlier at 18:47Z.  That's correlated with a spike in both splits and merges at that time.
+
+=== Details
+
+Note: I've updated the naming of the "db" hosts so that they're 1-based like the CockroachDB naming.  Hopefully, this means db3 == n3, etc.
+
+I've tainted all six database servers and redeployed them so that I can start with a fresh cluster of only three nodes.  I've initialized the cluster and set it up to run the "kv" workload with:
+
+[source,text]
+----
+cockroach workload init kv postgresql://root@192.168.1.223:26257/kv?sslmode=disable
+----
+
+Now running the workload with:
+
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 50 --tolerate-errors postgresql://root@192.168.1.223:26257/kv?sslmode=disable
+----
+
+Started that around 17:26Z.
+
+Will shortly start two more, redirected at the other two nodes: 192.168.1.14 and 192.168.1.121.
+
+17:34Z: started second one
+17:36Z: started third one
+
+I ran that third one against the wrong host.  Rerunning it at 17:39Z.
+
+Want to wait until at least 17:50Z before doing anything real.  Next step: enable cockroachdb on db4.
+
+18:05Z: bring up db4
+18:19Z: bring up db5
+19:54Z: bring up db6
+
+=== Online contraction
+
+Next, I'm going to try an online scale-down (contraction).  What's the order that I want to do this?  Obvious would be to remove db6, db5, and db4 -- there are no load generators running on them.  However, all the load is still pointed at db1.  Maybe it's worth removing that one.  How about: db6, db5, then verify the load is still on db1, then remove that one.  In order to do this experiment, though, I'll want to move the load generator that's currently pointed at db1 over to db4, so that it can be kept running the entire time.  (Otherwise, I can't really tell if latency or errors happened during the operation.)
+
+[source,text]
+----
+20:54Z Shut down load generator against db1.
+20:55Z Restart same load generator against db4 (192.168.1.85)
+20:10Z Begin decommission n6.  Took about 40 seconds.
+19:20Z Begin decommission n5.  Took 37 seconds.
+19:30Z Begin decommission n1, after verifying its store is still taking all the load.  Took 91 seconds.
+21:45Z Actually shut down nodes n6, n5, n1.
+----
+
+In terms of impact: there was little impact on throughput, latency, error rate (0), etc. from decommissioning nodes n6 and n5.  There was a small spike in p95 and p99 latency on all nodes around 21:11 (p95 spiked to 18ms from about 12ms, p99 spiked to about 35ms from about 18ms).  There was almost nothing at 21:20Z.  We do see the replicas and leaseholders moving, and some internal errors, but that's it.  p99 heartbeat latency peaked below 125ms.
+
+There was a much more significant impact for decommissioning n1: p95 latency spiked to about 33ms on all nodes, with p99 spiking up to 60ms.  Throughput saw a similar (brief) crash.  Queries per second for store 1 crashed t0 zero, while QPS for stores 2 and 4 rose up.
+
+As expected, there was no impact for the actual shutdown at 21:45Z.
+
+Broadly: there was some brief, notable performance impact, but no errors, and performance never got that bad. (60ms p99 is still pretty decent.)
+
+Final output from db1 load generator, for reference:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+12060.2s        0          413.8          438.7      1.7      3.4      4.7     26.2 read
+12060.2s        0          413.2          439.2      7.6     12.1     17.8     39.8 write
+12120.2s        0          400.0          438.5      1.7      3.7      6.0     41.9 read
+12120.2s        0          402.3          439.0      7.6     13.1     18.9    109.1 write
+12180.2s        0          413.1          438.4      1.6      3.4      4.7     22.0 read
+12180.2s        0          415.8          438.9      7.6     12.1     18.9     44.0 write
+12240.2s        0          414.4          438.3      1.7      3.4      5.0     28.3 read
+12240.2s        0          409.9          438.8      7.6     12.6     17.8     44.0 write
+12300.2s        0          393.6          438.1      1.7      3.8      6.0     31.5 read
+12300.2s        0          394.6          438.6      7.9     14.2     21.0     71.3 write
+12360.2s        0          363.4          437.7      1.9      4.7      7.6     39.8 read
+12360.2s        0          363.5          438.2      8.1     15.7     24.1     65.0 write
+12420.2s        0          393.5          437.5      1.8      3.8      6.0     39.8 read
+12420.2s        0          397.0          438.0      7.6     13.6     21.0     65.0 write
+^CNumber of reads that didn't return any results: 3.
+Highest sequence written: 5444392. Can be passed as --write-seq=R5444392 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+12430.4s        0        5437954          437.5      1.6      1.4      3.1      4.7   1543.5  read
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+12430.4s        0        5444392          438.0      7.6      7.3     12.6     18.9   1543.5  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+12430.4s        0       10882346          875.5      4.6      3.8     10.5     16.3   1543.5
+----
+
+Conclusions:
+
+* These experiments both went well.  However, there are two caveats: the database was tiny (peaked just over 1 GiB, just 2 ranges for most of the day).  That means most of the load was concentrated in one machine at a time and replication of each range was pretty fast.  It's worth redoing these with a much larger database size.
+
+Also today: compared my sysbench numbers to the ones posted in the https://www.cockroachlabs.com/docs/stable/performance.html#latency[CockroachDB docs].  They tested on a 3-node AWS cluster of `c5d.9xlarge` instances with much higher concurrency, so this isn't an apples-to-apples comparison.  They got an average latency of 4.3ms for oltp_insert and 0.7ms for oltp_point_select.  I tested on 3 c4 instances, much smaller, and got (looking at data from yesterday) 5.6ms for oltp_insert and 0.9ms for oltp_point_select.  That's in the right ballpark, at least.
+
+=== Making a bigger database
+
+As mentioned above, I want to rerun these tests with a bigger database -- ideally a few tens of GiB.  That'll ensure that load is well distributed across the nodes.  It will also make sure there's a bunch of stuff to replicate when adding or removing nodes.
+
+To do this, I'm going to increase the "kv" workload batch size and record size.
+
+Plan: 
+
+* done: drop the "kv" database
+* done: mark db1, db5, db6 as tainted and then `terraform apply` to redeploy them.
+* done: For my own sanity, enable CockroachDB on db1, decommission db4, mark it tainted, and redeploy it too.  Now I'll be back to a 3-node cluster with db1, db2, and db3.  But this didn't do what I expected: of course, db1 came back as n7.  Oh well.
+
+22:50Z: I'm now attempting to fill the database using three copies of this command, one running against each node:
+
+[source,text]
+----
+cockroach workload run kv --concurrency 4 --display-every=60s --batch 1000 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.121:26257/kv?sslmode=disable
+----
+
+This is write-only.  I'm going to let this run for a while to see how quickly it goes.  Ideally, once the database is reasonably large, I'd drop the batch size back to 1 and make it 50% reads.  This will simulate a basic read-write workload on a reasonably large database.
+
+Immediately, the CPU utilization of both CPUs on db1 are maxed out.  (Note that it's called db1 here because that's what terraform calls it.  It's actually n7 in CockroachDB.)  I expect to see some splitting happen.  This probably would have happened automatically if I'd used to the right flags above, but this will be interesting to see happen.
+
+Also interesting is that the p95 and p99 are both close to 15s, with throughput only 1-5 per second.  That's presumably because the batch size and data size are so large.  We did see a split early on, and that seems to have reduced disk %busy, but not CPU utilization on db1.
+
+22:55Z: I'm going to change these to batch size 100 to make it a bit more manageable -- both observable, and probably better for CRDB.  (It's hard to make guesses about load when queries are that big.)
+
+On the plus side, the database is already at 2.7 GiB.  This shouldn't take all that long.
+
+23:13Z: I can see we're still maxed out on CPU, but we're still only doing up to 10 queries per second.  I wonder if CockroachDB just can't tell that.  I'm going to change the batch size to 10 and see what happens to the rate.  (At this rate, it'll take over 8 hours to reach 50% full.)  I do observe that the rate of decrease in capacity did go down (i.e., we were filling it more slowly) when I reduced the batch size from 1000 to 100, so it's possible this too will make it worse.
+
+It finally split the range around 23:25Z and the CPU became much more balanced.
+
+2020-09-23T03:43Z: I finally stopped the workload.  The table is now 35 GiB with 32 ranges, so that seems pretty good -- a few multiples of DRAM.  Last data points from load generators:
+
+[source,text]
+----
+16080.3s        0           16.6           21.1    226.5    453.0    570.4    738.2 write
+16140.3s        0           17.7           21.1    209.7    469.8    604.0    738.2 write
+
+^CHighest sequence written: 3408050. Can be passed as --write-seq=R3408050 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+16169.1s        0         340805           21.1    189.7    167.8    402.7    570.4  11274.3  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+16169.1s        0         340805           21.1    189.7    167.8    402.7    570.4  11274.3
+
+----
+
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+15660.3s        0           17.6           21.3    184.5    520.1    671.1    805.3 write
+15720.3s        0           17.5           21.2    201.3    453.0    704.6   1040.2 write
+15780.3s        0           16.9           21.2    226.5    486.5    637.5    838.9 write
+15840.3s        0           16.9           21.2    209.7    503.3    704.6   1006.6 write
+15900.3s        0            9.1           21.2    419.4    805.3   1040.2   1140.9 write
+15960.3s        0           12.1           21.1    302.0    704.6    973.1   1476.4 write
+16020.3s        0           18.6           21.1    201.3    419.4    604.0    704.6 write
+16080.3s        0           16.8           21.1    226.5    453.0    604.0    805.3 write
+16140.3s        0           17.8           21.1    201.3    486.5    604.0    805.3 write
+^CHighest sequence written: 3409280. Can be passed as --write-seq=R3409280 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+16168.3s        0         340927           21.1    189.7    167.8    419.4    637.5  12884.9  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+16168.3s        0         340927           21.1    189.7    167.8    419.4    637.5  12884.9
+
+----
+
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+15660.3s        0           17.7           21.3    192.9    520.1    671.1    906.0 write
+15720.3s        0           17.2           21.2    209.7    469.8    671.1    872.4 write
+15780.3s        0           17.4           21.2    218.1    469.8    738.2   1040.2 write
+15840.3s        0           16.6           21.2    218.1    503.3    738.2   1342.2 write
+15900.3s        0            8.5           21.2    436.2    906.0   1140.9   1342.2 write
+15960.3s        0           13.8           21.1    260.0    604.0    872.4   1342.2 write
+16020.3s        0           18.2           21.1    209.7    419.4    604.0    872.4 write
+16080.3s        0           16.5           21.1    226.5    486.5    671.1    973.1 write
+16140.3s        0           17.6           21.1    192.9    503.3    604.0   1208.0 write
+^CHighest sequence written: 3409410. Can be passed as --write-seq=R3409410 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+16164.9s        0         340941           21.1    189.6    159.4    436.2    637.5  12348.0  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+16164.9s        0         340941           21.1    189.6    159.4    436.2    637.5  12348.0
+----
+
+== 2020-09-23
+
+Plan for the day:
+
+* take zfs snapshots, EBS snapshots? so that we can roll back to this state
+* run an extended read-write workload to settle into a new steady state (make any splits/merges happen)
+* run expansion / contraction experiments with new database
+

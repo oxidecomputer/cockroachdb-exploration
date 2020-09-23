@@ -12,6 +12,11 @@ locals {
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
 
+  // TODO: switch to ami-0deaf9069ff59cfd8, which is a newer version of the same
+  // image with a bug fixed that affects using pkg(1) to install packages.  I'm
+  // leaving this commented-out for now because I'm not ready to redeploy
+  // everything right now.
+  // ami = "ami-0deaf9069ff59cfd8"
   ami = "ami-012f34b61b75182e8"
 }
 
@@ -48,7 +53,7 @@ resource "aws_instance" "db" {
   tags = {
     Project = "crdb_exploration"
     Role    = "crdb_exploration_db"
-    Name    = "crdb_exploration_db_${count.index}"
+    Name    = "crdb_exploration_db_${count.index + 1}"
   }
 
   connection {
@@ -72,7 +77,7 @@ resource "aws_instance" "db" {
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"db\" \"db${count.index}\" \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"db\" \"db${count.index + 1}\" \"${self.private_ip}\"",
     ]
   }
 }
@@ -102,8 +107,8 @@ resource "null_resource" "cluster_config" {
     inline = [
       "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db.*.private_ip)}\"",
       "svcadm refresh cockroachdb:default",
-      "svcadm disable -st cockroachdb:default",
-      "svcadm enable -s cockroachdb:default",
+      // "svcadm disable -st cockroachdb:default",
+      // "svcadm enable -s cockroachdb:default",
     ]
   }
 }

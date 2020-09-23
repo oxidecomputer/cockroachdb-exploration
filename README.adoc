@@ -62,7 +62,9 @@ There are several tests we'd still like to run.  These are largely the same ques
 * Sustained heavy workload with a database larger than DRAM.  Take the 1x from above and run it for an extended period: at least 24 hours, and maybe a week.
 * Absolute performance numbers (ballpark).  This is hard, given all the changes the cluster makes, and also given that we're not using top-notch hardware.  But we probably only need order-of-magnitude understanding here.  Maybe see whether latency and throughput stabilize towards the end of the sustained heavy workload test, and if so, use those numbers.
 * General fault testing: `kill -9`, OS panic, hardware reset, network partition.  These may induce some latency bubbles or errors for a brief time, but the system should recover on its own.  Ideally, the bubbles and errors will be limited only to in-flight requests.
-* Special fault testing: see 9/18 notes: transient and extended outages, lots of data written during an extended outage or partition
+* Special fault testing: see 9/18 notes: transient and extended outages, lots of data written during an extended outage or partition.  What about recovering from zfs snapshot?
+* Look back at the YCSB issues from 9/8.  We have more metrics now (I/O average latency, %busy, CPU utilization, etc.)  We're also using provisioned IOPS now.
+* Look back at the KV workload issues from 9/9?  I do understand some of the internals a bit better now.
 
 For all of these tests, ideally we want to look at what the load generators see, what the server instances see, and what the metrics report.
 
@@ -132,6 +134,7 @@ $ configure_cluster --host DB_PRIVATE_IP
 * cockroachdb: Before you've initialized the CRDB cluster, if you go to the adminui, you get a very blank 404 page
 * terraform: we sometimes hit: https://github.com/terraform-providers/terraform-provider-aws/issues/12533. Retrying `terraform apply` has worked around the issue.
 * cockroachdb: I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.  https://www.youtube.com/watch?v=xUw8dN-yJU4&feature=emb_logo[There's a good, short video showing the data in these bundles.]
+* cockroachdb: flags for the `cockroach workload` command do not match the online docs
 
 
 == General notes
