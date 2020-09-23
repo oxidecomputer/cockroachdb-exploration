@@ -2,7 +2,7 @@
 
 locals {
   // Instance types used for each component.
-  db_instance_type      = "c4.large"
+  db_instance_type      = "m4.large"
   loadgen_instance_type = "c4.large"
   mon_instance_type     = "t2.medium"
 
@@ -47,7 +47,7 @@ resource "aws_instance" "db" {
   root_block_device {
     volume_size = 60
     volume_type = "io1"
-    iops = 500
+    iops = 1000
   }
 
   tags = {

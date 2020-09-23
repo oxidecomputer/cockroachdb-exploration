@@ -65,6 +65,8 @@ There are several tests we'd still like to run.  These are largely the same ques
 * Special fault testing: see 9/18 notes: transient and extended outages, lots of data written during an extended outage or partition.  What about recovering from zfs snapshot?
 * Look back at the YCSB issues from 9/8.  We have more metrics now (I/O average latency, %busy, CPU utilization, etc.)  We're also using provisioned IOPS now.
 * Look back at the KV workload issues from 9/9?  I do understand some of the internals a bit better now.
+* From 9/23: better understand compactions and flushes
+* From 9/23: big spikes in latency associated with spike in reads
 
 For all of these tests, ideally we want to look at what the load generators see, what the server instances see, and what the metrics report.
 
@@ -175,6 +177,14 @@ aws ec2 describe-instances --filters 'Name=tag:Project,Values=crdb_exploration' 
 
 * https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting#capacity-planning-issues[Capacity planning issues]
 * https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting#memory-issues[Memory issues].
+
+Has any work been done on ideal block size?  ZFS performance?  (ZIL/slog?)
+
+Is it possible to split a cluster (e.g., to create a secondary copy for other purposes, like backup)?
+
+What do all the metrics mean?  Many of them aren't well documented.
+
+* range operations: why are ranges added and removed aside from splitting and growing?  I saw a bunch of removes and adds just adding a new node to the cluster.  The metric is ranges, not replicas.
 
 == Caveats
 
