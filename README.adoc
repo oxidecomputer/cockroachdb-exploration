@@ -46,14 +46,19 @@ We've learned a bit about it too:
 * Performance can vary somewhat significantly (10% to 100%) when requests are issued directly to the leaseholder of a range vs. issued to some other node.  Further, CockroachDB dynamically adds new ranges, splits existing ranges, merges existing ranges, and rebalances ranges for both storage and load.  These two behaviors are both reasonable, but they complicate the testing process significantly if you're looking at absolute performance numbers because considerable variation is possible even when you haven't made any changes to the workload (because of these background changes).
 * We ran into issues early on using haproxy as a client-side load balancer.  These aren't necessarily bugs nor deal-breakers, but we switched to directing each load generator at a specific cluster instance to better control and understand what was going on.
 * Not related to CockroachDB but AWS: "gp2" storage volumes have significantly better performance for the first 5.4M IOPS after boot, which can easily be several hours.  After that, their rate is very inconsistent unless you're consistently saturating the max rate for your volume size.  These are unsuitable for our testing.
+* We've verified sysbench numbers reasonably close to what CockroachDB reports.
+* We've done some basic testing of online expansion and contraction of a cluster.  It works okay, but we found pretty long periods (20 minutes) of pretty massive latency degradation (~3-5 minutes where latency shoots to 10 or more seconds followed by 15-20 minutes of ~2-3x normal latency).
+
+
+Tests done (mentioned above):
+
+* Online expansion: verify that when clients are pointing at specific nodes, if we expand the cluster, there's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly.  (Based on experience so far, there may be an initial brief spike in latency (and dip in throughput) and overall throughput may go down a bit because some ranges are now remote that were previously local to some nodes.)
+* Online contraction: verify that when clients are pointing at specific nodes, if we stop the load generator(s) for one node and decommission the node, then here's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly more than was caused by just shutting down the load generator.
 
 == Next steps
 
 There are several tests we'd still like to run.  These are largely the same questions we started with, but we understand enough now to formulate them into something testable:
 
-* Are our existing sysbench numbers in line with what CockroachDB reports?
-* Online expansion: verify that when clients are pointing at specific nodes, if we expand the cluster, there's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly.  (Based on experience so far, there may be an initial brief spike in latency (and dip in throughput) and overall throughput may go down a bit because some ranges are now remote that were previously local to some nodes.)
-* Online contraction: verify that when clients are pointing at specific nodes, if we stop the load generator(s) for one node and decommission the node, then here's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly more than was caused by just shutting down the load generator.
 * Horizontal scalability (_not_ online):
 ** Start by ramping up client load until we reach something reasonably heavy and evenly distributed across nodes.
 ** Increase the size of the cluster and add a new load generator for the new node.  We should see comparable latency, and overall throughput should increase nearly linearly.
@@ -84,6 +89,10 @@ Other things we'll want to think through:
 * Replication of part of the namespace elsewhere?  Does the fact that CockroachDB already replicates ranges (and can drain/decommission nodes) basically cover this, on the grounds that we can use that to move instances between servers, racks, filesystems, etc.?  Check with Arjen about this.
 * When would a range need to be split using https://www.cockroachlabs.com/docs/v20.1/split-at[split-at] because of load?
 ** Go through https://www.cockroachlabs.com/docs/v20.1/performance.html[perf tuning exercises] in detail?
+
+Other enhancements we could do:
+
+* collect stats from workload runners to verify client-observed latencies.  `cockroach workload` makes this available.
 
 == Using this repo
 
@@ -185,6 +194,10 @@ Is it possible to split a cluster (e.g., to create a secondary copy for other pu
 What do all the metrics mean?  Many of them aren't well documented.
 
 * range operations: why are ranges added and removed aside from splitting and growing?  I saw a bunch of removes and adds just adding a new node to the cluster.  The metric is ranges, not replicas.
+
+Can you manually rebalance ranges (e.g., if there's some imbalance?)
+
+Is it expected that we'd see such massive impacts to latency when adding or removing nodes?
 
 == Caveats
 

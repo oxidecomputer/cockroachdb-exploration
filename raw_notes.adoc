@@ -8080,7 +8080,248 @@ Some things to check:
 
 NOTE: when changing the instance type, the Instances are rebooted!
 
+23:29Z: finally shut down the load generator programs.  I learned from this that the "errors" column is cumulative, and we do see errors when nodes are offline.  There had been no errors up to that point.
+
 Next steps:
 
+* note: I might well be running into EBS bandwidth limits: it was 500 Mbps or 62.5 MBps.  I don't know if that number is in each direction or what.  If it's combined in + out, then I was totally hitting that.  If not, I could still be hitting that since the limit depends on using 128 KiB I/Os.  There's https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-optimized.html[more info here].  On the other hand, the disks weren't 100% busy all the time...although nor was performance terrible all the time?  You know, though, the slow increase starting around 22:35 does look a bit like a token bucket being replenished.
 * Retry the experiment with bigger hardware?  Make sure next time we're not starting at 100% busy disks?
 * Add some sort of tracing to identify cases where a Goroutine (or thread) has been off-CPU for a lot longer than we'd expect?  Maybe trace wakeup stacks when a thread has been off-CPU for over 1s?
+* Try to articulate why I have such a hard time understanding I/O problems and what data would help explain it better
+
+== 2020-09-24
+
+Plan for the day:
+
+* Rerun online expansion experiment now that I'm on larger instance type
+* Also add tracing for long off-CPU times
+
+Tracing for long off-CPU times:
+
+[source,text]
+----
+dtrace -q -n 'BEGIN{ pcount = 0; printf("tracing\n"); }' -n 'sched:::off-cpu/args[1]->pr_fname == "cockroach"/{ timeoff[args[1]->pr_pid, args[0]->pr_lwpid] = timestamp; }' -n 'sched:::on-cpu/timeoff[curpsinfo->pr_pid, curlwpsinfo->pr_lwpid] && timestamp - timeoff[curpsinfo->pr_pid, curlwpsinfo->pr_lwpid] > 1000000000/{ @[ustack()] = quantize(timestamp - timeoff[curpsinfo->pr_pid, curlwpsinfo->pr_lwpid]); timeoff[curpsinfo->pr_pid, curlwpsinfo->pr_lwpid] = 0; }' -n 'tick-1s/pcount++ % 60 == 0/{ printf("%Y\n", walltimestamp); printa(@); trunc(@); }'
+----
+
+16:13Z: Running this workload x3 (nodes db1, db2, db3):
+
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+----
+
+18:09Z: Checking preconditions:
+
+* disks %busy: reasonably balanced around 25-30% on the four active nodes.
+* CPU: rather higher than expected: 90% on db2, 87% on db3, 80% on db1, 60% on db4.  This may be worth looking at a bit.
+* Throughput per node is close to the same among the three nodes, but further apart than I've seen before.  Busiest: db3, then db1, then db2.  Total throughput is about 2000 selects / second and 500 inserts / second.
+* Queries per second by store isn't exactly balanced (ranges from about 500 to 750 per store), but there's a good amount on each at least.  I/O is reliably under 1ms on all nodes.
+* Replicas per node: pretty balanced.
+* Leaseholders per node: okay, not great: ranges from 12-22.  Most on db2, then db4 and db3, then db1.  There was a bunch of range activity around 16:00 - 16:10Z.  The cluster looks healthy in terms of internal errors, heartbeat latency, bad ranges, round trip latency, etc.
+
+Digging into db2 CPU utilization:
+
+* It's serving the fewer number of queries right now.
+* Its store is tied for serving the most queries.
+* Its disks are among the least busy.  It's in the middle of the road for write IOPS, read IOPS, bytes written.  Not much outstanding I/O.  It is the one with 22 leaseholders, compared with 16, 16, and 12 on the other nodes.
+
+I discovered while doing this that there's an Advanced Debug screen for "hot ranges", where you can get them by node.  It'll even show you qps.  The hottest 1-2 ranges on node 2 are ranges 55 and 66.  I may be able to move these by "manually enqueue[ing] range in a replica queue", but I can't find much information on what this does so I'm going to skip it for now.
+
+I did run:
+
+[source,text]
+----
+cockroach sql --host 192.168.1.24 --execute 'SET CLUSTER SETTING server.remote_debugging.mode = "any"'
+----
+
+to access the allocator debug table for these ranges.  For range 55, Cockroach says "consider rebalance" but "no suitable rebalance target".  I'm not sure why n7 isn't a good target.  That node is in the middle of the pack for replica count and lower than most for lease count.
+
+There's an open question of why Cockroach isn't rebalancing here, but I don't think there's much I can do as a standard user.  Let's see what happens if we bring up a new node.  That said, there's definitely saturation on db2: lots of LAT for cockroachdb and headroom is single-digit percentages.
+
+Okay, I did try to manually enqueue it after all.  It failed:
+
+[source,text]
+----
+2020-09-24 18:34:24
+
+kv/kvserver/store.go:2679 [n2,s2,r55/3:/Table/55{-/1/-8644…}] running replicate.shouldQueue
+
+2020-09-24 18:34:24
+
+kv/kvserver/replicate_queue.go:241 [n2,s2,r55/3:/Table/55{-/1/-8644…}] no rebalance target found, not enqueuing
+
+2020-09-24 18:34:24
+
+kv/kvserver/allocator.go:945 [n2,s2,r55/3:/Table/55{-/1/-8644…}] ShouldTransferLease (lease-holder=2):
+  candidate: avg-ranges=49.5 avg-leases=16.5 avg-disk-usage=9.1 GiB avg-queries-per-second=639.5519724859548
+  8: ranges=50 leases=16 disk-usage=10 GiB queries-per-second=638.80
+  7: ranges=50 leases=12 disk-usage=8.4 GiB queries-per-second=484.52
+  2: ranges=51 leases=22 disk-usage=9.1 GiB queries-per-second=718.15
+  3: ranges=47 leases=16 disk-usage=8.7 GiB queries-per-second=716.74
+
+2020-09-24 18:34:24
+
+kv/kvserver/allocator.go:968 [n2,s2,r55/3:/Table/55{-/1/-8644…}] ShouldTransferLease decision (lease-holder=2): false
+
+2020-09-24 18:34:24
+
+kv/kvserver/store.go:2681 [n2,s2,r55/3:/Table/55{-/1/-8644…}] shouldQueue=false, priority=0.000000
+----
+
+I do have misgivings about doing this with so little headroom on this box, but I don't see a way to repair that.
+
+18:38Z: started cockroachdb on db5
+
+We had a similar problem as yesterday, but not so bad.  Throughput plummeted and we immediately saw p95+p99 outliers exceeding 10 seconds.  Throughput was basically from 18:40 to 18:43.  It wasn't until about 19:00 that we were back to the level of throughput we were at before the change.  However, p95 was back to about 50-80ms by about 18:43.
+
+There were apparently two errors around 19:23 and 19:24.
+
+QPS per node stayed about balanced among the three active nodes the whole time.  QPS per store looks pretty balanced, including the new node, after the update.
+
+During the heavy rebalancing period from 18:38 through about 18:55Z, CPU utilization per node fluctuated wildly but largely had some headroom -- even on db2.  CPU utilization went close to where it was before after that.
+
+Disks were definitely a lot busier during the rebalance period and up through a little after 19:00Z for db2.  db5 (the new node) got very busy for most of the rebalance period.  db2 got busy after db5 settled down.  The others had headroom most of that time.
+
+During that heavy period, about 18:38 to 18:50, average I/O time was high on db5 and higher than normal on the others.  This correlates with spikes in disk bytes written and read per second, a _decrease_ in write IOPS, a big increase in read IOPS, more I/Os outstanding to the device, and more time queued in the device driver, and lots of network traffic.  Most of this is as we'd expect.  Leaseholders per node became more balanced after all this, ranging from 11 to 16 (previously 12 to 22).
+
+p99 heartbeat latency did see some spikes in the several-second range, up to 4.5 seconds.  GCs got as high as 150ms, which is as high as I've ever seen them.  Round-trip latency spike: p95 to 3s, p99 to over 5s.  According to my tracing, no CockroachDB thread had been off-CPU for as much as a full second at a time at any point on any node.
+
+=== Another round
+
+I'm going to try this experiment one more time, and I'll change up my tracing methodology: this time I'm going to watch for any syscall that takes over 1s (regardless of whether we were off-CPU for that time).
+
+This is a little underbaked, but here goes:
+
+[source,text]
+----
+dtrace -q -n 'BEGIN{ pcount = 0; printf("tracing\n"); }' -n 'syscall:::entry/execname == "cockroach"/{ self->start = timestamp; }' -n 'syscall:::return/self->start && timestamp - self->start > 1000000000/{ @[ustack()] = quantize(timestamp - self->start); @all[ustack()] = quantize(timestamp - self->start); @avgs[probefunc] = avg(timestamp - self->start); }' -n 'syscall:::return{ self->start = 0; }' -n 'tick-60s/pcount++ % 1 == 0/{ printf("%Y\n", walltimestamp); printa(@); trunc(@); }' -n 'END{ printf("ALL\n"); printa(@all); printa(@avgs); }'
+----
+
+19:43Z: starting cockroachdb on db6.  Pretty similar story -- took almost 20 minutes to get back to full throughput.  One big difference though is that the p95 only spiked to 500ms, but the p99 was still over 8s.
+
+My tracing didn't show a whole lot.  Nearly everything that blocked for that long was in lwp_park.  There was also fdsync on db4, with an average time of just over 1s, and write on db1, with an average time of 2.6s (these are averages for calls taking over 1s).
+
+Things have been pretty stable since about 20:00Z.  I'll wait until about 21:00 and then start shrinking the cluster again.
+
+22:00Z: the cluster has been fairly stable, albeit with some latency spikes at 21:21, 21:31, and 21:48 or so (and associated throughput dips).  %busy is steady at 20-32% on all nodes.  Average I/O time is well under 1ms.  The cluster looks fairly balanced, although leaseholders vary as 7-13 per node.  Heartbeat latency is consistently under 80ms.  GC under 1ms.  Throughput is about 2700 selects per second and 670 inserts per second.  p95 is about 6ms, p99 is about 10ms.  Queries per store fall into two modes: ~620qps (four nodes) and ~460ps (two nodes).  CPU utilization ranges across the cluster, but there's mostly headroom everywhere.  (Not a ton on a few nodes -- several are about 75%+.)
+
+I'm going to start decommissioning nodes.  I'll decommission n10 (.248), n9 (.9), and n8 (.13) -- the reverse order that I just added them.  I will not be changing the load generators.
+
+22:05Z begin decommissioning n10.  This officially took 5 minutes.
+22:10Z decommissioning n10 completes (it's still running and reports as "decommissioning" until I actually disable it and it's been gone for 5 minutes.)
+
+This looked a lot like adding a new node. Throughput crashed, although not quite to zero.  After about 20 minutes, it was close to recovered and more stable.  The bump in p95 and p99 was much smaller -- p99 peaked at around 350ms.  Disks got quite busy on a lot of systems, and there were lots of bytes read and written.
+
+22:28Z: disable cockroachdb on n10.  As we'd expect, this had no effect.
+22:39Z: start decommissioning n9.  Took 4m47s.
+
+
+Impact: very similar to the last one, with slower recovery.
+
+23:02Z: disable cockroachdb on n9.  No impact, as we'd expect.
+23:12Z: begin decommissioning n8.  This one took 7m41s and had a similar impact as the others.
+23:25Z: disable cockroachdb on n8.
+
+I let this run until about 2020-09-25T03:55Z (about 4.5 more hours) and took Grafana screenshots for the whole day.  Of note, we got a total of three errors from the `cockroach workload` runs.  The one pointed at .24 (db1) reported:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+38457.9s        0          702.2          670.5      3.4      7.6     12.6     92.3 read
+38457.9s        0          173.0          167.6      7.3     13.1     19.9     33.6 write
+38517.9s        0          627.6          670.5      3.7      9.4     15.7     88.1 read
+38517.9s        0          159.0          167.6      7.9     15.7     25.2    113.2 write
+...
+E200925 02:55:44.465932 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n2: breaker open [exhausted]) (SQLSTATE 40003)
+38577.9s        1          469.4          670.2      3.5      8.1     13.1  11811.2 read
+38577.9s        1          116.2          167.5      7.6     14.7     21.0    973.1 write
+38637.9s        1          638.1          670.1      3.5      8.1     13.1  11811.2 read
+38637.9s        1          159.5          167.5      7.3     13.6     21.0  11811.2 write
+38697.8s        1          654.4          670.1      3.5      8.4     14.2     88.1 read
+38697.8s        1          165.2          167.5      7.6     14.7     23.1     88.1 write
+38757.8s        1          684.9          670.1      3.4      7.9     13.1     54.5 read
+38757.8s        1          173.1          167.5      7.3     14.7     22.0    109.1 write
+----
+
+The one pointed at .14 (db2) reported:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+31258.3s        0          497.2          638.6      5.0     12.1     17.8     88.1 read
+31258.3s        0          126.4          159.7      9.4     17.8     25.2     96.5 write
+31318.3s        0          645.5          638.6      3.9      7.9     11.5     37.7 read
+31318.3s        0          165.2          159.7      7.9     13.1     18.9     54.5 write
+E200925 00:55:42.465421 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n3: breaker open [exhausted]) (SQLSTATE 40003)
+31378.3s        1          453.7          638.2      4.2     10.0     18.9   1677.7 read
+31378.3s        1          115.3          159.6      7.9     16.3     27.3  15569.3 write
+31438.3s        1          512.2          638.0      3.9      9.4     15.7   8589.9 read
+31438.3s        1          131.6          159.6      7.9     15.7     25.2   8589.9 write
+31498.3s        1          648.9          638.0      3.7      8.9     14.2     44.0 read
+31498.3s        1          163.6          159.6      7.6     14.2     22.0     44.0 write
+
+...
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+38457.9s        1          658.2          637.8      3.7      7.9     13.1     65.0 read
+38457.9s        1          166.6          159.5      7.9     14.2     22.0     79.7 write
+38517.9s        1          624.8          637.8      3.8      8.9     15.2     79.7 read
+38517.9s        1          156.6          159.5      7.9     15.7     25.2    109.1 write
+E200925 02:56:19.557115 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n7: breaker open [exhausted]) (SQLSTATE 40003)
+38577.9s        2          417.9          637.4      3.7      7.9     12.6  10737.4 read
+38577.9s        2          103.6          159.4      7.9     14.2     22.0  10737.4 write
+38637.9s        2          651.4          637.5      3.8      7.6     12.6     71.3 read
+38637.9s        2          164.3          159.4      7.9     13.6     21.0     88.1 write
+38697.8s        2          650.7          637.5      3.7      8.1     13.6     71.3 read
+38697.8s        2          163.8          159.4      7.9     15.2     23.1    109.1 write
+----
+
+All of these were right around sudden, brief periods of a few requests having 10-15s latencies.  Note these weren't caught even by the p99 -- they're only in pMax.
+
+Final output:
+
+[source,text]
+----
+^CNumber of reads that didn't return any results: 4.
+Highest sequence written: 7105384. Can be passed as --write-seq=R7105384 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42519.2s        1       28426499          668.6      3.9      3.1      8.1     17.8 103079.2  read
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42519.2s        1        7105384          167.1      8.2      6.8     14.2     29.4  94489.3  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+42519.2s        1       35531883          835.7      4.8      3.7     10.5     21.0 103079.2  
+----
+
+
+[source,text]
+----
+^CNumber of reads that didn't return any results: 1.
+Highest sequence written: 6754550. Can be passed as --write-seq=R6754550 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42508.5s        2       27007396          635.3      4.2      3.4      8.4     17.8 103079.2  read
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42508.5s        2        6754550          158.9      8.5      7.1     14.7     29.4 103079.2  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+42508.5s        2       33761946          794.2      5.0      3.9     10.5     21.0 103079.2  
+----
+
+
+[source,text]
+----
+^CNumber of reads that didn't return any results: 4.
+Highest sequence written: 7336781. Can be passed as --write-seq=R7336781 to the next run.
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42501.7s        0       29352493          690.6      3.8      3.1      7.9     16.8  98784.2  read
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__total
+42501.7s        0        7336781          172.6      8.0      6.6     14.2     28.3 103079.2  write
+
+_elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
+42501.7s        0       36689274          863.2      4.6      3.7     10.0     19.9 103079.2  
+----
