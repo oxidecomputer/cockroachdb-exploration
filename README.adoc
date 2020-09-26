@@ -48,12 +48,14 @@ We've learned a bit about it too:
 * Not related to CockroachDB but AWS: "gp2" storage volumes have significantly better performance for the first 5.4M IOPS after boot, which can easily be several hours.  After that, their rate is very inconsistent unless you're consistently saturating the max rate for your volume size.  These are unsuitable for our testing.
 * We've verified sysbench numbers reasonably close to what CockroachDB reports.
 * We've done some basic testing of online expansion and contraction of a cluster.  It works okay, but we found pretty long periods (20 minutes) of pretty massive latency degradation (~3-5 minutes where latency shoots to 10 or more seconds followed by 15-20 minutes of ~2-3x normal latency).
+* It's never required manual intervention to restore service when enough nodes were available.
 
 
 Tests done (mentioned above):
 
 * Online expansion: verify that when clients are pointing at specific nodes, if we expand the cluster, there's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly.  (Based on experience so far, there may be an initial brief spike in latency (and dip in throughput) and overall throughput may go down a bit because some ranges are now remote that were previously local to some nodes.)
 * Online contraction: verify that when clients are pointing at specific nodes, if we stop the load generator(s) for one node and decommission the node, then here's no significant increase in latency or error rate, and that overall throughput of the cluster does not go down significantly more than was caused by just shutting down the load generator.
+* Fault tests: `kill -9`, `uadmin 2 1` (OS reboot), OS panic, transient partition, longer partition
 
 == Next steps
 
@@ -198,6 +200,8 @@ What do all the metrics mean?  Many of them aren't well documented.
 Can you manually rebalance ranges (e.g., if there's some imbalance?)
 
 Is it expected that we'd see such massive impacts to latency when adding or removing nodes?
+
+It seems that `cockroach workload run kv` never reports a latency more than about 10 seconds, even when a node is partitioned for two minutes.  (It also reported no errors during that period.)  That seems wrong.  Relatedly? I have found that the p99 has only ever shot up to 10s, even when throughput seemed to go to zero for a few minutes (i.e., when expanding the cluster).  I haven't verified whether that's wrong or not.  I also saw 10s heartbeat latency for a node that was partitioned -- although most of the data points were actually 4.55s -- incredibly stable.
 
 == Caveats
 

@@ -8325,3 +8325,372 @@ _elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(
 _elapsed___errors_____ops(total)___ops/sec(cum)__avg(ms)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)__result
 42501.7s        0       36689274          863.2      4.6      3.7     10.0     19.9 103079.2  
 ----
+
+== 2020-09-25
+
+Today I'll do some basic fault testing.  I want to get back to a five-node cluster.  To do that, I need to reinitialize nodes 4, 5, and 6.  To do this, I'm using `terraform taint` on those three instances and then `terraform apply`.
+
+I've brought up the last two nodes and have a five-node cluster with reasonably balanced replias.  Starting the "kv" workload once against each node.
+
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+----
+
+That was around 15:13Z.  I will leave this running for several hours.
+
+Performance was a little erratic, and this is a higher load (cluster-wide) than previously, so I decided to bring the concurrency back down to see if it would be stable at a lower level instead.  Reran above commands but with concurrency 2.  That was at 15:20Z.
+
+At 15:46Z I restarted these in order to run them under nohup.
+
+19:52Z: These have now been running for about 4 hours reasonably steadily.  Throughput looks fairly consistent, though it's definitely jagged (small spike sin latency all the time).  Disks %busy is largely around 35%.  CPU utilization ranges a lot, but the busiest nodes are largely under 80%.  There have been 0 errors.
+
+I'm going to try an easy test first: hit CockroachDB on one node with `kill -9`.  I'll do this several times in a row, a few minutes apart.  I'm picking db1 (n7) fairly arbitrarily.
+
+The client talking to that node immediately reported 35 errors:
+
+[source,text]
+----
+14999.2s        0          436.5          465.8      2.6      5.8     10.0    113.2 read
+14999.2s        0          110.1          116.6      5.8     11.0     19.9    159.4 write
+E200925 19:55:45.182200 1 workload/cli/run.go:445  EOF
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+15059.1s       35          434.5          465.6      2.6      5.2      8.9   1811.9 read
+15059.1s       35          108.2          116.5      5.8     10.5     16.8   1744.8 write
+----
+
+I did this two more times, at 20:02 and 20:08.  There were a bunch of errors each time, and a reduction in throughput, but no real impact on latency.  Three of the four load generators aimed at different nodes also saw a few errors that all looked like this:
+
+[source,text]
+----
+E200925 20:02:20.514932 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n7: breaker open [exhausted]) (SQLSTATE 40003)
+...
+15719.1s        1          472.9          482.1      2.5      5.0      8.9     67.1 read
+15719.1s        1          118.7          120.6      5.5     10.0     16.3     92.3 write
+E200925 20:08:15.107262 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n7: breaker open [exhausted]) (SQLSTATE 40003)
+15779.1s        3          461.9          482.1      2.5      5.0      8.1    184.5 read
+15779.1s        3          114.3          120.5      5.5     10.0     16.3   2818.6 write
+----
+
+Just for completeness I'm going to do this one more time on a different node, db4 (n11).  Done at 20:19:30 or so.  This had almost no visible impact on any of the graphs.  I did see similar errors on one client, but that was it.
+
+**Reboot OS:** Next I'm going to try a hard reset of the OS on db4 using `uadmin 2 1`.  Did that around 20:44:50.  cockroachdb was back up by 20:45:55Z.
+
+To the client running against that load balancer, this looked similar to `kill -9`:
+
+[source,text]
+----
+17939.0s       83          497.9          510.8      2.4      5.0      8.9     50.3 read
+17939.0s       83          126.3          127.7      5.5     10.5     16.3     75.5 write
+E200925 20:45:00.996989 1 workload/cli/run.go:445  EOF
+17999.0s      155          196.3          509.8      2.6      6.3     11.0     35.7 read
+17999.0s      155           48.8          127.4      6.0     12.6     22.0     71.3 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+18059.0s      262          247.6          508.9      2.6      6.3     11.0   5100.3 read
+18059.0s      262           61.3          127.2      5.8     11.5     16.8     35.7 write
+----
+
+Two other clients also saw similar errors as before.  Here's one:
+
+[source,text]
+----
+17999.0s        0          419.5          461.1      2.8      6.3     11.5     41.9 read
+17999.0s        0          105.1          115.4      6.0     12.1     18.9     71.3 write
+E200925 20:45:08.161418 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n11: breaker open [exhausted]) (SQLSTATE 40003)
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+18059.0s        1          362.5          460.8      2.8      6.8     10.5   7247.8 read
+18059.0s        1           89.9          115.3      6.0     12.1     17.8   7247.8 write
+18119.0s        1          435.3          460.7      2.6      6.0     10.0     71.3 read
+18119.0s        1          108.6          115.3      5.8     11.0     15.7     62.9 write
+----
+
+There was a general bump in latency (p95 from 6ms to 8ms, p99 from 8ms to 14ms) and commensurate drop in throughput on all nodes.  The node I rebooted was back to full strength within 90 seconds.
+
+Next, I'm going to try a real **OS panic**.  Did this at 20:51:20 or so.  Again, some clients saw some errors:
+
+[source,text]
+----
+18299.0s        3          509.5          505.8      2.4      4.7      7.6     56.6 read
+18299.0s        3          126.5          126.4      5.5     10.0     15.7     46.1 write
+E200925 20:51:38.605596 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [propagate]) (SQLSTATE 40003)
+18359.0s        4          323.6          505.2      2.5      5.0      8.4  20401.1 read
+18359.0s        4           80.7          126.2      5.8     10.0     15.7  20401.1 write
+18419.0s        4          485.1          505.2      2.5      5.0      7.9     41.9 read
+18419.0s        4          121.7          126.2      5.8     10.0     15.2     35.7 write
+----
+
+The client connected to that host reported:
+
+[source,text]
+----
+18359.0s      262          381.2          508.4      2.4      4.7      8.1     56.6 read
+18359.0s      262           94.2          127.1      5.5      9.4     14.2    109.1 write
+E200925 20:52:09.494424 1 workload/cli/run.go:445  read tcp 192.168.1.219:55958->192.168.1.252:26257: read: connection reset by peer
+18419.0s      398            0.0          506.7      0.0      0.0      0.0      0.0 read
+18419.0s      398            0.5          126.7      0.5      0.9  51539.6  51539.6 write
+E200925 20:53:09.901031 1 workload/cli/run.go:445  dial tcp 192.168.1.252:26257: connect: connection refused
+18479.0s      783          156.2          505.6      2.6      5.5     10.5   2281.7 read
+18479.0s      783           39.3          126.4      5.8     10.5     16.3   1342.2 write
+18539.0s      783          485.5          505.5      2.4      5.2     10.0     75.5 read
+18539.0s      783          122.0          126.4      5.5     10.5     18.9     88.1 write
+18599.0s      783          501.6          505.5      2.4      4.7      7.9    121.6 read
+18599.0s      783          123.2          126.4      5.5     10.0     17.8    100.7 write
+----
+
+CockroachDB was back up by 20:53:09Z (estimated 2m or so of downtime).  Total impacted time for that one node, according to Prometheus, was about 3 minutes (from full strength to full strength).  The cluster latency and throughput were affected similarly to the reboot before it.
+
+So those tests went pretty well.  Note in these cases, there was no rebalancing needed (or done).
+
+23:18Z: going to start partitioning tests.  Will partition off db4.  Note that this is kind of tricky because my ssh session is coming in over the network.
+
+I found that I don't have `ipdadm` available here, and I also wouldn't have access to the box while I did.  I may try doing this with ipf.
+
+Notes:
+
+[source,text]
+----
+# To enable IPF in the kernel (once per boot)
+ipf -E
+
+# To load/reload rules
+ipf -F a -f filename
+
+# To debug rules:
+ipfstat -ionhl
+----
+
+I think the rule I want should be something like:
+
+[source,text]
+----
+pass in all
+pass out all
+block in from any to any port = 26257
+block out from any to any port = 26257
+----
+
+23:46Z: enabled IPF on db4 using `ipf -E`.  Did _not_ create any rules.  Want to double check that performance is okay.  I did not see any immediate result in the graphs, which makes sense, since the network is not a bottleneck here.
+
+23:51Z: enable IPF rules above.  I confirmed that my ssh session still works.  I can't tell how Cockroach has been affected.  I see these errors from a few clients:
+
+[source,text]
+----
+29158.4s      103          454.5          460.2      2.6      5.2      8.9     67.1 read
+29158.4s      103          114.4          115.1      5.8     10.5     16.8     48.2 write
+E200925 23:51:09.590144 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [exhausted]) (SQLSTATE 40003)
+29218.4s      104          415.8          460.1      2.6      5.0      8.4   7247.8 read
+29218.4s      104          103.6          115.1      5.8      9.4     15.7   7247.8 write
+29278.4s      104          479.0          460.1      2.6      4.7      7.3     35.7 read
+29278.4s      104          118.3          115.1      5.8      9.4     14.7     48.2 write
+----
+
+Admin UI does say n11 (.252) is suspect (which is the right node).  This is what I see in the load generator for the instance that's assigned to the node that's partitioned:
+
+[source,text]
+----
+29038.4s      783          501.8          503.0      2.5      4.7      8.4     54.5 read
+29038.4s      783          124.8          125.8      5.5     10.0     15.7     50.3 write
+29098.4s      783          504.1          503.0      2.5      4.7      7.9     54.5 read
+29098.4s      783          127.1          125.8      5.2      9.4     15.2     50.3 write
+29158.4s      783          233.9          502.5      2.5      5.0     10.0     67.1 read
+29158.4s      783           57.9          125.6      5.5     10.5     18.9    113.2 write
+29218.4s      783            0.0          501.5      0.0      0.0      0.0      0.0 read
+29218.4s      783            0.0          125.4      0.0      0.0      0.0      0.0 write
+29278.4s      783            0.0          500.4      0.0      0.0      0.0      0.0 read
+29278.4s      783            0.0          125.1      0.0      0.0      0.0      0.0 write
+----
+
+At 23:55Z, I flushed the rules with `ipf -F a`, re-enabling access.  The node is immediately no longer suspect.  The other load generators don't report anything interesting here.  The one pointed at the partitioned node:
+
+[source,text]
+----
+29338.4s      783            0.0          499.4      0.0      0.0      0.0      0.0 read
+29338.4s      783            0.0          124.9      0.0      0.0      0.0      0.0 write
+29398.3s      783            0.0          498.4      0.0      0.0      0.0      0.0 read
+29398.3s      783            0.0          124.6      0.0      0.0      0.0      0.0 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+29458.3s      783          406.7          498.2      2.5      4.7      7.6 103079.2 read
+29458.3s      783          104.5          124.6      5.5      9.4     14.7 103079.2 write
+29518.3s      783          499.4          498.2      2.5      4.7      7.9    125.8 read
+29518.3s      783          124.3          124.6      5.5      9.4     16.3     79.7 write
+----
+
+It never reported any errors during that interval, and the max latency it reported was 10s.  That seems wrong.  (Added it to the README list of questions.)
+
+That said, the overall impact here was pretty impressive.  CockroachDB reported no errors and (for whatever reason?) p95/p99 only rose a little bit -- less than ambient fluctuation for 30 minutes prior to the test.  It did have an affect -- queries per second dropped from about 2200 to about 1900 (across the cluster) during the partition.  Throughput on all nodes went down.  .252 plummeted to 0, of course.  QPS by store showed that store 11 did no queries for a little while.  Everybody's CPU usage and disk throughput went down a bit (probably because one load generator was off, not because one node was down).  p99 heartbeat latency shot up to 10s as well for that node.  I'd call this pretty successful, but the 10s peak is worth digging into.
+
+Next, I'm going to try partitioning for a longer time.
+
+2020-09-25T00:03Z: create partition again (using `ipf -F a -f block_crdb.ipf`)
+
+Note: while digging into this, I found https://forum.cockroachlabs.com/t/high-service-latency/1105/6[a forum post] that shows two interesting things:
+
+* high latencies of exactly 10.2 seconds (which is exactly what I see, when I feel it should be more).  Found https://github.com/cockroachdb/cockroach/issues/26529[another reference to 10.2 seconds].
+* "The " slow heartbeat took" message usually means that the disk is slow (or has bizarre performance characteristics). We’ve seen this on some cloud vms."  I've seen this as well during bad tests, and wondered whether slow I/O could cause it somehow.  I'm not sure why it would.
+* This has also led me to https://github.com/cockroachdb/cockroach/issues/19699[this GitHub issue].
+
+00:12Z: The extended partition has so far proceeded as we'd expect:
+
+[source,text]
+----
+29758.3s      783          124.8          124.6      5.5     10.0     15.7     44.0 write
+29818.3s      783          437.9          498.1      2.4      5.0      9.4    134.2 read
+29818.3s      783          111.8          124.5      5.5     12.6     96.5    352.3 write
+29878.3s      783          276.7          497.6      2.5      5.0      8.4     33.6 read
+29878.3s      783           71.1          124.4      5.5      9.4     14.2     75.5 write
+29938.3s      783            0.0          496.6      0.0      0.0      0.0      0.0 read
+29938.3s      783            0.0          124.2      0.0      0.0      0.0      0.0 write
+29998.3s      783            0.0          495.6      0.0      0.0      0.0      0.0 read
+29998.3s      783            0.0          123.9      0.0      0.0      0.0      0.0 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+30058.3s      783            0.0          494.6      0.0      0.0      0.0      0.0 read
+30058.3s      783            0.0          123.7      0.0      0.0      0.0      0.0 write
+30118.3s      783            0.0          493.7      0.0      0.0      0.0      0.0 read
+30118.3s      783            0.0          123.4      0.0      0.0      0.0      0.0 write
+30178.3s      783            0.0          492.7      0.0      0.0      0.0      0.0 read
+30178.3s      783            0.0          123.2      0.0      0.0      0.0      0.0 write
+E200926 00:08:49.992643 1 workload/cli/run.go:445  read tcp 192.168.1.219:44348->192.168.1.252:26257: read: connection timed out
+30238.3s      787            0.0          491.7 103079.2 103079.2 103079.2 103079.2 read
+30238.3s      787            0.0          122.9 103079.2 103079.2 103079.2 103079.2 write
+30298.3s      787            0.0          490.7      0.0      0.0      0.0      0.0 read
+30298.3s      787            0.0          122.7      0.0      0.0      0.0      0.0 write
+30358.3s      787            0.0          489.7      0.0      0.0      0.0      0.0 read
+30358.3s      787            0.0          122.5      0.0      0.0      0.0      0.0 write
+E200926 00:12:32.150330 1 workload/cli/run.go:445  dial tcp 192.168.1.252:26257: connect: connection timed out
+30418.3s      789            0.0          488.8      0.0      0.0      0.0      0.0 read
+30418.3s      789            0.0          122.2 103079.2 103079.2 103079.2 103079.2 write
+----
+
+That's the load generator whose node is partitioned.  It's completing nothing and having queries take either 0 or the apparent maximum latency.  The other nodes have reported a few of the same error as above and a few multi-second latency outliers.  Here's an example from the load generator aimed at db1:
+
+[source,text]
+----
+29818.3s      104          115.3          115.1      5.8     10.0     16.3     62.9 write
+29878.3s      104          402.2          460.0      2.6      5.8     10.0    285.2 read
+29878.3s      104           99.2          115.1      5.8     13.1    104.9    402.7 write
+E200926 00:03:13.840994 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [exhausted]) (SQLSTATE 40003)
+29938.3s      105          415.9          459.9      2.6      5.0      7.6   6174.0 read
+29938.3s      105          103.9          115.0      5.8     10.0     15.7   6174.0 write
+29998.3s      105          465.7          459.9      2.6      5.0      7.9     52.4 read
+29998.3s      105          118.8          115.1      5.8      9.4     15.2     48.2 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+30058.3s      105          474.7          459.9      2.6      4.7      7.3     27.3 read
+30058.3s      105          119.4          115.1      5.5      9.4     13.6     28.3 write
+30118.3s      105          465.4          459.9      2.6      5.0      8.9    109.1 read
+30118.3s      105          115.6          115.1      5.8     10.0     17.8     60.8 write
+30178.3s      105          284.7          459.6      2.9     11.5     22.0   2684.4 read
+30178.3s      105           71.3          115.0      6.0     18.9     46.1   2550.1 write
+30238.3s      105          226.6          459.1      4.1     13.1     25.2   1275.1 read
+30238.3s      105           56.2          114.9      8.1     27.3     88.1    570.4 write
+30298.3s      105          409.1          459.0      3.0      6.3     11.5    100.7 read
+30298.3s      105           99.5          114.8      6.0     11.0     16.8     96.5 write
+30358.3s      105          447.3          459.0      2.8      5.2      8.1     50.3 read
+30358.3s      105          111.1          114.8      5.8      9.4     14.2     32.5 write
+----
+
+It's a little surprising that things got better, then we still saw some pMax outliers in the multi-second range, but they weren't even caught by p99.
+
+00:20: I'm surprised that now 17 minutes after the partition was introduced, there are still a lot of under-replicated ranges.  I wonder if those are all the system ranges, which have replication-factor 5?  At 03:30 Grafana reports 40 ranges being under-replicated.  At 07:30, the number is going down, and at 00:08 it's settled at 33.  Let's look at the ranges from our "kv" database:
+
+[source,text]
+----
+root@192.168.1.24:26257/defaultdb> select (range_id, lease_holder, replicas) from [show ranges from database kv];
+       ?column?
+----------------------
+  (55,3,"{2,3,7}")
+  (67,3,"{2,3,7}")
+  (85,7,"{2,3,7}")
+  (77,12,"{2,7,12}")
+  (83,2,"{2,3,7}")
+  (84,2,"{2,3,7}")
+  (69,7,"{2,7,12}")
+  (62,7,"{2,3,7}")
+  (79,3,"{2,3,12}")
+  (76,12,"{3,7,12}")
+  (90,12,"{2,3,12}")
+(11 rows)
+----
+
+The node we're messing with is db4, which is n11.  Sure enough: it has no ranges for this database.  We did see a bunch of read activity and disk utilization on db1 starting around 00:08Z.  The read activity is going down slowly, but interestingly: it did not replace activity that was happening before on db4.  db4's reads were idle before that.  I suspect that previous to this, everything was in db4's ARC, and we're slowly filling db1's ARC.  Disk %busy on db1 has had a few spikes to saturation, but they've been very short-lived -- it's mostly at about 40%.  Other nodes' utilization was basically unaffected (except db4, which went to 0).  CPU utilization went up a bit on some nodes and down a bit on others after this happened.
+
+Cluster thoughput had a big, brief crash at 00:08 corresponding to a spike in latency and CPU utilization on a few nodes (but a crash in utilization on other nodes0).  There was also a spike in network throughput, and there were a bunch of range adds and removes around this time.  I'm coming to think these are _replica_ adds and removes.
+
+This all seems to have gone pretty well.
+
+00:28Z: I'm going to restore network connectivity and see what happens.
+
+This had a bigger impact than we'd like to see, but it looks like the cluster is recovering.  p95 bumped up from about 6ms to about 25ms.  p99 bumped up from about 10ms to about 90ms.  Still no errors reported.  The load generator picked up:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+31258.2s      795            0.0          475.6      0.0      0.0      0.0      0.0 read
+31258.2s      795            0.0          118.9      0.0      0.0      0.0      0.0 write
+E200926 00:27:20.780072 1 workload/cli/run.go:445  dial tcp 192.168.1.252:26257: connect: connection timed out
+31318.2s      797            0.0          474.7      0.0      0.0      0.0      0.0 read
+31318.2s      797            0.0          118.7 103079.2 103079.2 103079.2 103079.2 write
+31378.2s      797            0.0          473.8      0.0      0.0      0.0      0.0 read
+31378.2s      797            0.0          118.5      0.0      0.0      0.0      0.0 write
+
+31438.2s      797          148.4          473.2      2.9      7.9     19.9 103079.2 read
+31438.2s      797           36.8          118.3      6.3     14.2     75.5 103079.2 write
+31498.2s      797          191.8          472.7      3.7     17.8     35.7   2415.9 read
+31498.2s      797           49.1          118.2      7.6     30.4    113.2   2013.3 write
+31558.2s      797          192.4          472.1      2.8     18.9     48.2   1208.0 read
+31558.2s      797           48.7          118.1      6.8     56.6    201.3   1006.6 write
+31618.2s      797          465.2          472.1      2.5      5.5      8.9     60.8 read
+31618.2s      797          113.7          118.0      5.5     10.0     17.8   2080.4 write
+31678.2s      797          506.8          472.2      2.5      4.7      7.1     39.8 read
+31678.2s      797          126.2          118.1      5.5      8.9     13.6     50.3 write
+31738.2s      797          455.7          472.2      2.5      6.0     10.0     44.0 read
+31738.2s      797          112.0          118.0      5.8     11.0     17.8     48.2 write
+----
+
+As we've seen with cluster expansion, CPU utilization went all over the place for a little while.  Disk %busy seemed to even out across the cluster, with only a few spikes.  The reads on db1 stopped.
+
+I hadn't noticed before, but: although the partitioned node maintained its system replicas, it lost all of its leases -- that makes sense.  It got them back when it came back.  Further, it shows up (remember, it's n11) in the list of replicas for ranges from the "kv" database:
+
+[source,text]
+----
+root@192.168.1.24:26257/defaultdb> select (range_id, lease_holder, replicas) from [show ranges from database kv];
+       ?column?
+-----------------------
+  (55,2,"{2,3,11}")
+  (67,7,"{7,11,12}")
+  (85,2,"{2,3,7}")
+  (77,12,"{2,11,12}")
+  (83,3,"{2,3,7}")
+  (84,7,"{3,7,11}")
+  (69,12,"{2,7,12}")
+  (62,11,"{2,7,11}")
+  (79,3,"{2,3,12}")
+  (76,3,"{3,11,12}")
+  (90,11,"{2,11,12}")
+(11 rows)
+
+Time: 122.942376ms
+----
+
+During all of this, p99 RTT latency has risen as high as 1.75s and p99 heartbeat latency has hit 10s -- but those 10s data points are all for the partitioned node.  Again, 10s seems to be some hardcoded max.
+
+There are no more under-replicated ranges.
+
+In summary: there was a big crash in cluster throughput when the node came back -- down to about 800 selects and 200 inserts (from 1900 selects and 470 inserts while at 4 nodes).  That lasted about 3 minutes.  After that, throughput recovered to the previous level of about 2500 selects and 615 inserts.  This has gone pretty well!
+
+To summarize, I did a few experiments today:
+
+* 19:52, 20:02, 20:08Z, 20:19:30: `kill -9` one db node
+* 20:44: reboot OS
+* 20:51: panic OS
+* 23:51 - 23:55: transient partition of one node
+* 00:03 - 00:28: longer partition of one node
+
+These all went pretty well, though there was an impact when the long partition was removed similar to (but not as bad as) when a node is added to or removed from the cluster.
+
+I'm going to let these workloads run through the weekend to see how they do.  We seem to have plenty of disk space in the cluster as well as the "mon" zone.
+
+Plan for next time:
+
+* Review how the workload ran over the weekend
+* Review README tests -- what's left that's worth doing?
+* Rerun expansion, contraction tests on systems with dedicated NVME devices?

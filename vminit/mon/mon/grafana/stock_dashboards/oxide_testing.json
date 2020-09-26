@@ -16,7 +16,7 @@
   "gnetId": null,
   "graphTooltip": 1,
   "id": 8,
-  "iteration": 1600914424620,
+  "iteration": 1601063422082,
   "links": [
     {
       "$$hashKey": "object:784",
@@ -851,13 +851,13 @@
         "total": false,
         "values": true
       },
-      "lines": true,
+      "lines": false,
       "linewidth": 1,
       "nullPointMode": "null",
       "percentage": false,
       "pluginVersion": "7.1.5",
-      "pointradius": 2,
-      "points": false,
+      "pointradius": 1,
+      "points": true,
       "renderer": "flot",
       "seriesOverrides": [],
       "spaceLength": 10,
@@ -951,13 +951,13 @@
         "total": false,
         "values": true
       },
-      "lines": true,
+      "lines": false,
       "linewidth": 1,
       "nullPointMode": "null",
       "percentage": false,
       "pluginVersion": "7.1.5",
-      "pointradius": 2,
-      "points": false,
+      "pointradius": 1,
+      "points": true,
       "renderer": "flot",
       "seriesOverrides": [],
       "spaceLength": 10,
@@ -1050,13 +1050,13 @@
         "total": false,
         "values": true
       },
-      "lines": true,
+      "lines": false,
       "linewidth": 1,
       "nullPointMode": "null",
       "percentage": false,
       "pluginVersion": "7.1.5",
-      "pointradius": 2,
-      "points": false,
+      "pointradius": 1,
+      "points": true,
       "renderer": "flot",
       "seriesOverrides": [],
       "spaceLength": 10,
@@ -3757,7 +3757,7 @@
       "type": "row"
     }
   ],
-  "refresh": false,
+  "refresh": "10s",
   "schemaVersion": 26,
   "style": "dark",
   "tags": [
@@ -3888,8 +3888,8 @@
     ]
   },
   "time": {
-    "from": "2020-09-23T20:10:33.832Z",
-    "to": "2020-09-23T21:00:36.389Z"
+    "from": "now-1h",
+    "to": "now"
   },
   "timepicker": {
     "refresh_intervals": [
@@ -3919,5 +3919,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 16
+  "version": 17
 }
