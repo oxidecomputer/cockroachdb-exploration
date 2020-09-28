@@ -8694,3 +8694,40 @@ Plan for next time:
 * Review how the workload ran over the weekend
 * Review README tests -- what's left that's worth doing?
 * Rerun expansion, contraction tests on systems with dedicated NVME devices?
+
+== 2020-09-28
+
+Plan for the day:
+
+* Review the long-running workload over the weekend.
+* If time:
+** Begin running expansion, contraction tests on systems with dedicated NVME drives
+** Review README to come up with concrete plan for any more testing, if any
+
+=== Review of the weekend workload
+
+Review of weekend workload, from period 2020-09-26T01:00Z to 2020-09-28T20:00Z (2d 19h = 67 hours):
+
+* Overall throughput was reasonably stable, with lots of variation around a fairly flat trend line.  Average was 2475 selects/second and 618 inserts/second.  These were well-distributed across all nodes, and slightly less well distributed across all stores (as we've seen before).
+* There were six spikes in latency (and drops in throughput) that were notably larger than the general variation.  Generally, p95 was around 6ms (biggest peak was up to 10ms) and p99 was around 9ms (biggest peak up to 18ms).
+* There were no CockroachDB errors reported.
+* CPU utilization was fairly constant for most of the time.  CPUs ranged in utilization from about 50% to about 75%, but each CPU was fairly stable the whole time.
+* Average I/O time (to the disk) was reasonably consistently below 750us.  There were some outliers up to 2.5ms.
+* Disks were largely under 30% busy the whole time.  There was a notable divergence in %busy starting around 2020-09-27T00:00Z and a sudden, bigger divergence around 2020-09-27T16:00Z.  This latter one correlated with a spike in disk bytes read per second.  The write IOPS graphs track the %busy graphs in this way -- big divergence around 2020-09-27T16:00Z.
+* There was a relatively large number of compactions at 2020-09-27T15:25Z.
+
+Interestingly, there were zero range ops at all reported by CockroachDB during this time.  Replicas per node and leaseholders per node did change a bit at various points.  There were no internal errors either.
+
+p99 Heartbeat latency was largely under 150ms, with one notable spike up to 1.2s around 2020-09-27T15:25Z.
+
+The count of SQL connections was steady the entire time.  Mean RPC clock offset peaked around 500us.
+
+Overall it feels like this went pretty well.  It'd be nice to better understand the general variation in latency and particularly the larger spikes, but this probably doesn't make sense in the current configuration.  It would make more sense in something closer to a production configuration, potentially with at least a slog device.
+
+=== Expansion/contraction with local NVME devices
+
+AWS provides instance types with local NVME devices.
+
+Per https://calculator.aws/#/estimate?id=efaf0e10e9cf496d4dfcc95a26dbbf4cecef56b7[my calculation above]: 6 c4.large instances, each with a 60 GiB "io1" volume with 500 provisioned IOPS costs $783 / month.  This no longer reflects my current testing, though; now I'm using 6 m4.large instances, each with a 60GiB "io1" volume with 1000 provisioned IOPS.  https://calculator.aws/#/estimate?id=b0e74a19f859eb291e70cd889c41193d6945a4db[This costs $1,083 / month.]
+
+For attached drives, I think we'd want to use the "i3" series.  Take "i3.large": that includes a 475 GiB NVME SSD, 10 Gbe, 2 vCPUs, and 15 GiB of memory.  That's the smallest one, and strictly better than our "m4.large".  This would be a good one to go with.  What does it cost?  For 6 of them with the cheapest EBS volume (which I assume would be unused -- a 60 GiB gp2 device), https://calculator.aws/#/estimate?id=87ed0544f7e510e94b8f2546d79388bb327c7e8f[it costs $720].  That's cheaper than what I'm using now.  Note that I'd need to keep these up a lot longer (i.e., overnight), since storage is transient.
