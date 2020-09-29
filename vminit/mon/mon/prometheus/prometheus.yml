@@ -24,9 +24,8 @@ scrape_configs:
             values: [ 'crdb_exploration_nvmedb' ]
 
     relabel_configs:
-    - source_labels: [ __address__ ]
+    - source_labels: [ __meta_ec2_tag_Role ]
       target_label: 'cluster'
-      replacement: 'test-cluster'
 
   - job_name: 'grafana'
     scrape_interval: 10s

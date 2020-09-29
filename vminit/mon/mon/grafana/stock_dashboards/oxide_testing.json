@@ -16,7 +16,7 @@
   "gnetId": null,
   "graphTooltip": 1,
   "id": 8,
-  "iteration": 1601307769203,
+  "iteration": 1601391860132,
   "links": [
     {
       "$$hashKey": "object:784",
@@ -754,7 +754,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "SUM(sql_distsql_queries_active)",
+          "expr": "SUM(sql_distsql_queries_active{job=\"cockroachdb\",cluster=\"$cluster\",instance=~\"$node\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -865,7 +865,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "(SUM(rate(node_cpu_seconds_total{mode=\"user\"}[30s])) BY (vmname) + SUM(rate(node_cpu_seconds_total{mode=\"kernel\"}[30s])) BY (vmname)) / 1000  ",
+          "expr": "(SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname)) / 1000  ",
           "interval": "",
           "legendFormat": "{{vmname}}",
           "refId": "A"
@@ -965,7 +965,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "(SUM(rate(node_cpu_seconds_total{mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{mode=\"kernel\"}[30s])) BY (vmname, cpu)) / (SUM(rate(node_cpu_seconds_total{mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{mode=\"kernel\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{mode=\"idle\"}[30s])) BY (vmname, cpu))  ",
+          "expr": "(SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu)) / (SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"idle\"}[30s])) BY (vmname, cpu))  ",
           "interval": "",
           "legendFormat": "{{vmname}} cpu {{cpu}}",
           "refId": "A"
@@ -1064,7 +1064,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rlentime_total{disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{disk!=\"rpool\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_rlentime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1162,7 +1162,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rtime_total{disk!=\"rpool\"}[$rate_interval])/1000000000",
+          "expr": "irate(kstat_disk_rtime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/1000000000",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1261,7 +1261,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\",role=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1359,7 +1359,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nread_total{disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nread_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1457,7 +1457,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\",role=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1555,7 +1555,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_reads_total{disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1653,7 +1653,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_link_obytes64_total[$rate_interval])",
+          "expr": "irate(kstat_link_obytes64_total{role=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{vmname}} {{device}}",
           "refId": "A"
@@ -1752,7 +1752,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_link_rbytes64_total[$rate_interval])",
+          "expr": "irate(kstat_link_rbytes64_total{role=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{vmname}} {{device}}",
           "refId": "A"
@@ -1850,7 +1850,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "kstat_disk_rcnt{disk!=\"rpool\"}",
+          "expr": "kstat_disk_rcnt{role=\"$cluster\",disk!=\"rpool\"}",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1946,7 +1946,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_wlentime_total{disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{disk!=\"rpool\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_wlentime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -2566,13 +2566,13 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(liveness_heartbeatlatency_bucket[$__interval]))",
+          "expr": "histogram_quantile(0.99, rate(liveness_heartbeatlatency_bucket{job=\"cockroachdb\",cluster=\"$cluster\"}[$__interval]))",
           "interval": "",
           "legendFormat": "{{instance}} p99",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.5, rate(liveness_heartbeatlatency_bucket[$__interval]))",
+          "expr": "histogram_quantile(0.5, rate(liveness_heartbeatlatency_bucket{job=\"cockroachdb\",cluster=\"$cluster\"}[$__interval]))",
           "interval": "",
           "legendFormat": "{{instance}} p50",
           "refId": "B"
@@ -2668,55 +2668,55 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "SUM(rate(changefeed_error_retries[$rate_interval]))",
+          "expr": "SUM(rate(changefeed_error_retries{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "changefeed_error_retries",
           "refId": "A"
         },
         {
-          "expr": "SUM(rate(distsender_errors_inleasetransferbackoffs[$rate_interval]))",
+          "expr": "SUM(rate(distsender_errors_inleasetransferbackoffs{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "distsender_errors_inleasetransferbackoffs",
           "refId": "B"
         },
         {
-          "expr": "SUM(rate(distsender_errors_notleaseholder[$rate_interval])) ",
+          "expr": "SUM(rate(distsender_errors_notleaseholder{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval])) ",
           "interval": "",
           "legendFormat": "distsender_errors_notleaseholder",
           "refId": "C"
         },
         {
-          "expr": "SUM(rate(distsender_rpc_sent_nextreplicaerror[$rate_interval])) ",
+          "expr": "SUM(rate(distsender_rpc_sent_nextreplicaerror{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval])) ",
           "interval": "",
           "legendFormat": "distsender_rpc_sent_nextreplicaerror",
           "refId": "D"
         },
         {
-          "expr": "SUM(rate(exec_error[$rate_interval])) \n",
+          "expr": "SUM(rate(exec_error{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval])) \n",
           "interval": "",
           "legendFormat": "exec_error",
           "refId": "E"
         },
         {
-          "expr": "SUM(rate(kv_protectedts_reconciliation_errors[$rate_interval])) \n",
+          "expr": "SUM(rate(kv_protectedts_reconciliation_errors{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval])) \n",
           "interval": "",
           "legendFormat": "kv_protectedts_reconciliation_errors",
           "refId": "F"
         },
         {
-          "expr": "SUM(rate(leases_error[$rate_interval]))",
+          "expr": "SUM(rate(leases_error{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "leases_error",
           "refId": "G"
         },
         {
-          "expr": "SUM(rate(leases_transfers_error[$rate_interval]))",
+          "expr": "SUM(rate(leases_transfers_error{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "leases_transfers_error",
           "refId": "H"
         },
         {
-          "expr": "SUM(rate(sql_temp_object_cleaner_schemas_deletion_error[$rate_interval])) ",
+          "expr": "SUM(rate(sql_temp_object_cleaner_schemas_deletion_error{job=\"cockroachdb\",cluster=\"$cluster\"}[$rate_interval])) ",
           "interval": "",
           "legendFormat": "sql_temp_object_cleaner_schemas_deletion_error",
           "refId": "I"
@@ -2927,7 +2927,7 @@
       "pluginVersion": "7.1.5",
       "targets": [
         {
-          "expr": "node:capacity_available:ratio",
+          "expr": "node:capacity_available:ratio{job=\"cockroachdb\",cluster=\"$cluster\"}",
           "interval": "",
           "legendFormat": "{{instance}}",
           "refId": "A"
@@ -2941,6 +2941,7 @@
     {
       "columns": [
         {
+          "$$hashKey": "object:2247",
           "text": "Current",
           "value": "current"
         }
@@ -3597,13 +3598,226 @@
       }
     },
     {
-      "collapsed": true,
+      "collapsed": false,
       "datasource": null,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 182
+      },
+      "id": 88,
+      "panels": [],
+      "title": "Load generator and monitoring",
+      "type": "row"
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "decimals": 1,
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "fill": 0,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 14,
+        "w": 12,
+        "x": 0,
+        "y": 183
+      },
+      "hiddenSeries": false,
+      "id": 84,
+      "legend": {
+        "alignAsTable": true,
+        "avg": true,
+        "current": true,
+        "max": true,
+        "min": true,
+        "show": true,
+        "sort": "current",
+        "sortDesc": true,
+        "total": false,
+        "values": true
+      },
+      "lines": false,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "percentage": false,
+      "pluginVersion": "7.1.5",
+      "pointradius": 1,
+      "points": true,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "(SUM(rate(node_cpu_seconds_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",mode=\"kernel\"}[30s])) BY (vmname, cpu)) / (SUM(rate(node_cpu_seconds_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",mode=\"kernel\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",mode=\"idle\"}[30s])) BY (vmname, cpu))  ",
+          "interval": "",
+          "legendFormat": "{{vmname}} cpu {{cpu}}",
+          "refId": "A"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "CPU utilization, by node and CPU",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "$$hashKey": "object:2531",
+          "decimals": 1,
+          "format": "percentunit",
+          "label": "",
+          "logBase": 1,
+          "max": "1",
+          "min": "0",
+          "show": true
+        },
+        {
+          "$$hashKey": "object:2532",
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "description": "Percent of time that at least one I/O was outstanding to a device",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "fill": 0,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 14,
+        "w": 12,
+        "x": 12,
+        "y": 183
+      },
+      "hiddenSeries": false,
+      "id": 86,
+      "legend": {
+        "alignAsTable": true,
+        "avg": true,
+        "current": true,
+        "max": true,
+        "min": true,
+        "show": true,
+        "sort": "avg",
+        "sortDesc": true,
+        "total": false,
+        "values": true
+      },
+      "lines": false,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "percentage": false,
+      "pluginVersion": "7.1.5",
+      "pointradius": 1,
+      "points": true,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "irate(kstat_disk_rtime_total{role!=\"crdb_exploration_db\",role!=\"crdb_exploration_nvmedb\",disk!=\"rpool\"}[$rate_interval])/1000000000",
+          "interval": "",
+          "legendFormat": "{{disk}} {{vmname}}",
+          "refId": "A"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Disks: Percent busy",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "$$hashKey": "object:102",
+          "decimals": 0,
+          "format": "percentunit",
+          "label": "",
+          "logBase": 1,
+          "max": "1",
+          "min": "0",
+          "show": true
+        },
+        {
+          "$$hashKey": "object:103",
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": "0",
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "collapsed": true,
+      "datasource": null,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 197
       },
       "id": 53,
       "panels": [
@@ -3867,9 +4081,9 @@
       {
         "allValue": null,
         "current": {
-          "selected": false,
-          "text": "test-cluster",
-          "value": "test-cluster"
+          "selected": true,
+          "text": "crdb_exploration_db",
+          "value": "crdb_exploration_db"
         },
         "datasource": "Prometheus",
         "definition": "",
@@ -3987,7 +4201,7 @@
     ]
   },
   "time": {
-    "from": "now-3h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {
@@ -4018,5 +4232,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 18
+  "version": 20
 }

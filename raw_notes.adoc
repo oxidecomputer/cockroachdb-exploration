@@ -8741,3 +8741,20 @@ Next steps:
 * modify vminit to use NVME device (and/or: modify the whole thing to _always_ use a separate device for this)
 * modify Prometheus config to relabel the nodes from different clusters differently
 * modify Prometheus config to relabel the other metrics too? and/or modify the Grafana dashboards so that the load generator is in a totally separate row and change the existing metrics to filter on db vs. nvmedb
+
+== 2020-09-29
+
+* Modified vminit to use second device for a new pool with our ZFS datasets.  This breaks deployment of the non-NVME nodes for now.  I'll fix that when I'mr eady to tear down the long-running experiment.
+* Modified Prometheus config to relabel the CockroachDB metrics for the cluster based on the Role tag set by Terraform.
+* Modified Grafana dashboards to look only at one set of database nodes at a time.  I put the utilization metrics for the load generator and monitoring instances in a separate row.
+
+Still to do:
+
+* Modify vminit script to wait up to a minute for DNS to work, since there seems to be a startup race where DNS isn't available by the time we go to run "fetcher"
+
+Then I can:
+
+* deploy a new NVME cluster and start filling it up
+* make sure the Grafana dashboards are showing the right thing for each cluster
+* resummarize long-run results from the other cluster
+* dig into the crash I saw in throughput (spike in latency) on the other cluster
