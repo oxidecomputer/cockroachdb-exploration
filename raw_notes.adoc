@@ -8731,3 +8731,13 @@ AWS provides instance types with local NVME devices.
 Per https://calculator.aws/#/estimate?id=efaf0e10e9cf496d4dfcc95a26dbbf4cecef56b7[my calculation above]: 6 c4.large instances, each with a 60 GiB "io1" volume with 500 provisioned IOPS costs $783 / month.  This no longer reflects my current testing, though; now I'm using 6 m4.large instances, each with a 60GiB "io1" volume with 1000 provisioned IOPS.  https://calculator.aws/#/estimate?id=b0e74a19f859eb291e70cd889c41193d6945a4db[This costs $1,083 / month.]
 
 For attached drives, I think we'd want to use the "i3" series.  Take "i3.large": that includes a 475 GiB NVME SSD, 10 Gbe, 2 vCPUs, and 15 GiB of memory.  That's the smallest one, and strictly better than our "m4.large".  This would be a good one to go with.  What does it cost?  For 6 of them with the cheapest EBS volume (which I assume would be unused -- a 60 GiB gp2 device), https://calculator.aws/#/estimate?id=87ed0544f7e510e94b8f2546d79388bb327c7e8f[it costs $720].  That's cheaper than what I'm using now.  Note that I'd need to keep these up a lot longer (i.e., overnight), since storage is transient.
+
+Testing this out: I've modified my Terraform config to be able to deploy i3.large systems in parallel and I've modified Prometheus to scrape them, too.  I think the Prometheus config needs some work though because right now it's hard to separate these from the other database nodes, while also looking at the load generators.  Maybe I can deal with this separately though (e.g., with regular expressions on the name label).  I either want to do that or (probably better) use Prometheus relabeling to adjust the cluster name and maybe another label.
+
+Although it did work to provision the i3.large instances, this didn't do what we want: it put the root pool on a tiny disk (2 GiB, probably the min size of the AMI) and the NVME device is unused.  I need to modify vminit to create a new pool and put the cockroach filesystem on that pool if there's an NVME device present.
+
+Next steps:
+
+* modify vminit to use NVME device (and/or: modify the whole thing to _always_ use a separate device for this)
+* modify Prometheus config to relabel the nodes from different clusters differently
+* modify Prometheus config to relabel the other metrics too? and/or modify the Grafana dashboards so that the load generator is in a totally separate row and change the existing metrics to filter on db vs. nvmedb

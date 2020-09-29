@@ -23,3 +23,11 @@ output "loadgen_internal_ip" {
 output "mon_internal_ip" {
   value = aws_instance.mon.*.private_ip
 }
+
+output "nvmedb_external_ip" {
+  value = aws_instance.db_nvme.*.public_ip
+}
+
+output "nvmedb_internal_ip" {
+  value = aws_instance.db_nvme.*.private_ip
+}

@@ -3,11 +3,14 @@
 locals {
   // Instance types used for each component.
   db_instance_type      = "m4.large"
+  dbnvme_instance_type  = "i3.large"
   loadgen_instance_type = "c4.large"
   mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
   ndbs = 6
+  // Count of NVME cluster nodes to create.
+  ndbs_nvme = 3
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
@@ -18,18 +21,8 @@ locals {
   // everything right now.
   // ami = "ami-0deaf9069ff59cfd8"
   ami = "ami-012f34b61b75182e8"
+  nvme_ami = "ami-0deaf9069ff59cfd8"
 }
-
-// Grab the latest OmniOS image.
-//data "aws_ami" "image" {
-//  owners      = ["313551840421"]
-//  most_recent = true
-//
-//  filter {
-//    name   = "name"
-//    values = ["*OmniOS*"]
-//  }
-//}
 
 // CockroachDB cluster nodes
 resource "aws_instance" "db" {
@@ -82,6 +75,49 @@ resource "aws_instance" "db" {
   }
 }
 
+resource "aws_instance" "db_nvme" {
+  count = local.ndbs_nvme
+
+  ami                         = local.nvme_ami
+  instance_type               = local.dbnvme_instance_type
+  key_name                    = local.ssh_key_name
+  subnet_id                   = aws_subnet.crdb_exploration.id
+  vpc_security_group_ids      = [aws_security_group.crdb_exploration.id]
+  associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.primary.id
+
+  tags = {
+    Project = "crdb_exploration"
+    Role    = "crdb_exploration_nvmedb"
+    Name    = "crdb_exploration_nvmedb_${count.index + 1}"
+  }
+
+  connection {
+    type = "ssh"
+    user = "root"
+    host = self.public_ip
+  }
+
+  //
+  // We use a sequence of provisioners to set up the VM the way we want it.
+  //
+  provisioner "file" {
+    source      = "../vminit/vminit.sh"
+    destination = "/var/tmp/vminit.sh"
+  }
+
+  provisioner "file" {
+    source      = "../vminit/fetcher.gz"
+    destination = "/var/tmp/fetcher.gz"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "bash -x /var/tmp/vminit.sh \"db\" \"nvmedb${count.index + 1}\" \"${self.private_ip}\"",
+    ]
+  }
+}
+
 //
 // We use a null resource to reconfigure the cluster (specifically, the
 // "--join" argument used when starting CockroachDB) when any of the set of
@@ -106,6 +142,31 @@ resource "null_resource" "cluster_config" {
   provisioner "remote-exec" {
     inline = [
       "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db.*.private_ip)}\"",
+      "svcadm refresh cockroachdb:default",
+      // "svcadm disable -st cockroachdb:default",
+      // "svcadm enable -s cockroachdb:default",
+    ]
+  }
+}
+
+// We do the same for the NVME cluster.
+resource "null_resource" "cluster_config_nvme" {
+  count = local.ndbs_nvme
+
+  triggers = {
+    my_id       = aws_instance.db_nvme[count.index].id
+    cluster_ips = "${join(",", aws_instance.db_nvme.*.private_ip)}"
+  }
+
+  connection {
+    type = "ssh"
+    user = "root"
+    host = aws_instance.db_nvme[count.index].public_ip
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db_nvme.*.private_ip)}\"",
       "svcadm refresh cockroachdb:default",
       // "svcadm disable -st cockroachdb:default",
       // "svcadm enable -s cockroachdb:default",

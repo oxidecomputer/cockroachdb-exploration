@@ -18,6 +18,10 @@ scrape_configs:
         filters:
           - name: 'tag:Role'
             values: [ 'crdb_exploration_db' ]
+      - port: 8080
+        filters:
+          - name: 'tag:Role'
+            values: [ 'crdb_exploration_nvmedb' ]
 
     relabel_configs:
     - source_labels: [ __address__ ]
