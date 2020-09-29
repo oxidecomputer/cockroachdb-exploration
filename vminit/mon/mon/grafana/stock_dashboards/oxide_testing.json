@@ -16,7 +16,7 @@
   "gnetId": null,
   "graphTooltip": 1,
   "id": 8,
-  "iteration": 1601391860132,
+  "iteration": 1601413771786,
   "links": [
     {
       "$$hashKey": "object:784",
@@ -1064,7 +1064,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rlentime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_rlentime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1162,7 +1162,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rtime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/1000000000",
+          "expr": "irate(kstat_disk_rtime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/1000000000",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1261,7 +1261,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\",role=\"$cluster\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\",role=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1359,7 +1359,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nread_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nread_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1457,7 +1457,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\",role=\"$cluster\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\",role=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1555,7 +1555,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1850,7 +1850,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "kstat_disk_rcnt{role=\"$cluster\",disk!=\"rpool\"}",
+          "expr": "kstat_disk_rcnt{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1946,7 +1946,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_wlentime_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_wlentime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -4082,8 +4082,8 @@
         "allValue": null,
         "current": {
           "selected": true,
-          "text": "crdb_exploration_db",
-          "value": "crdb_exploration_db"
+          "text": "crdb_exploration_nvmedb",
+          "value": "crdb_exploration_nvmedb"
         },
         "datasource": "Prometheus",
         "definition": "",
@@ -4232,5 +4232,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 20
+  "version": 21
 }
