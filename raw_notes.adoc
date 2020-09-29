@@ -8768,6 +8768,10 @@ CockroachDB execute some range splits at 21:20, 21:25, 21:32, and 21:50 or so.  
 
 There have been a few errors, particularly 21:20 to 21:26 and again around 21:32.  These are correlated with those splits.  These were not reported by the load generator.
 
+22:50Z I looked at the rate at which the disk usage is growing.  We wrote about 5.2 GiB in the last hour.  At that rate, if I leave this until the morning (say, 9am), that's 17 hours from now, so we'd expect to have written 88 GiB overnight.  That's well under the capacity of these boxes, but a bit more than I'd intended.  It seems better to do that than to try to stop now and pick it up in the morning.
+
+==== CPU utilization
+
 Realizing that the thing is CPU bound and disks are pretty idle, I considered trying to ramp up the batch size to see what happens, but I decided against it because this is going to be done soon anyway and this gives me a chance to look at the CPU utilization:
 
 [source,text]
