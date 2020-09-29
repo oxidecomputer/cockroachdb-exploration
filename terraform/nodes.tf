@@ -10,7 +10,7 @@ locals {
   // Count of cluster nodes to create.
   ndbs = 6
   // Count of NVME cluster nodes to create.
-  ndbs_nvme = 3
+  ndbs_nvme = 1
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
@@ -18,10 +18,11 @@ locals {
   // TODO: switch to ami-0deaf9069ff59cfd8, which is a newer version of the same
   // image with a bug fixed that affects using pkg(1) to install packages.  I'm
   // leaving this commented-out for now because I'm not ready to redeploy
-  // everything right now.
+  // everything right now and because it seems that DNS is not configured as I'd
+  // expect in this image.
   // ami = "ami-0deaf9069ff59cfd8"
   ami = "ami-012f34b61b75182e8"
-  nvme_ami = "ami-0deaf9069ff59cfd8"
+  nvme_ami = "ami-012f34b61b75182e8"
 }
 
 // CockroachDB cluster nodes
@@ -37,6 +38,7 @@ resource "aws_instance" "db" {
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.primary.id
 
+  // XXX replace this with "ebs_block_device"
   root_block_device {
     volume_size = 60
     volume_type = "io1"

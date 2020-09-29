@@ -92,9 +92,22 @@ hostname "$VMI_ALIAS"
 echo "$VMI_ALIAS" > /etc/nodename
 /usr/bin/sed -i '/^PARAM_IGNORE_LIST=/s/=.*/=12/' /etc/default/dhcpagent
 
-# Set up filesystems and users.
-zfs create -o mountpoint=/export/home rpool/home
-zfs create -o mountpoint="/$VMI_DSNAME" "rpool/$VMI_DSNAME"
+# Figure on which disk to create our non-root zpool.
+rpool_disk="$(zpool list -v -H rpool | awk 'NR == 2{ print $1 }')"
+other_disks=$(diskinfo -Hp | awk '$2 != "'$rpool_disk'"')
+if [[ $(wc -l <<< $other_disks) -ne 1 ]]; then
+	fail "could not choose disk for new zpool"
+fi
+IFS=$'\t' read u1 name u2 u3 size rmv ssd <<< $other_disks
+if [[ "$size" =~ [^0-9] ]]; then
+	fail "failed to parse size of disk"
+fi
+avail_disk="$name"
+
+# Set up zpool, filesystems and users.
+zpool create -O compression=on tank "$avail_disk"
+zfs create -o mountpoint=/export/home tank/home
+zfs create -o mountpoint="/$VMI_DSNAME" "tank/$VMI_DSNAME"
 useradd -d "/export/home/$VMI_USER" -m -s /bin/bash "$VMI_USER"
 
 # Unpack the tarballs and correct permissions for the unpacked dataset.
