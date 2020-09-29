@@ -8750,6 +8750,8 @@ Next steps:
 * Modified vminit script to wait up to a minute for DNS to work, since there seems to be a startup race where DNS isn't available by the time we go to run "fetcher"
 * Deployed a new NVME cluster
 * Checked Grafana dashboards are showing the right thing for each cluster
+* Started filling up NVME cluster
+* Summarized the long-running workload again
 
 === Filling up the cluster
 
@@ -8769,6 +8771,8 @@ CockroachDB execute some range splits at 21:20, 21:25, 21:32, and 21:50 or so.  
 There have been a few errors, particularly 21:20 to 21:26 and again around 21:32.  These are correlated with those splits.  These were not reported by the load generator.
 
 22:50Z I looked at the rate at which the disk usage is growing.  We wrote about 5.2 GiB in the last hour.  At that rate, if I leave this until the morning (say, 9am), that's 17 hours from now, so we'd expect to have written 88 GiB overnight.  That's well under the capacity of these boxes, but a bit more than I'd intended.  It seems better to do that than to try to stop now and pick it up in the morning.
+
+While wrapping up, I went to "nohup" my load generators.  I accidentally clobbered 2.out and 3.out from the long-running workload (two of the five files).  That's a bummer.
 
 ==== CPU utilization
 
@@ -9101,3 +9105,11 @@ As I mentioned in yesterday's notes (9/28), there were a few notable spikes in l
 
 * At 9/26 16:00Z and 9/26 20:20Z, p95 spiked to 7ms across the cluster and throughput dropped to 1700 selects per second and 420 inserts per second.  These were short spikes.  When I zoom in on this 12-hour period, those two spikes don't look so large, but rather there are a bunch of smaller dips.  This wasn't correlated with anything obvious in the other graphs.
 * At 9/29 10:42Z, there was a much bigger latency spike, with p95 shooting to 15ms and p99 shooting to 40ms.  Throughput correspondingly plummeted.  Latency and throughput seemed to go back to normal quickly.  However, from that point, store 12 started doing a lot less qps and the other stores did more.  CPU utilization and disk utilization shifted around a bit. There was also a big spike in network traffic -- only about 6-8 MBps, but that's 6-8 times what was happening before that.  There didn't appear to be any I/O problems.  There were a bunch of leaseholder changes, though -- db5 gave up 4 of its 17 leases.  Generally, the cluster became more balanced in terms of leaseholders.  p99 Heartbeat latency shot up briefly to 2.5s.  There were no SQL errors.
+
+
+=== Next steps
+
+* Review overnight results from NVME cluster
+* Run expansion, contraction tests on the NVME cluster
+* Review README to see what other experiments are worth doing before writing upr esults
+* Review another day of the long-running workload?
