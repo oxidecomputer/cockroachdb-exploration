@@ -74,6 +74,22 @@ esac
 gzcat < /var/tmp/fetcher.gz > /var/tmp/fetcher
 chmod +x /var/tmp/fetcher
 
+# Wait up to 60 seconds for DNS to work.  It's not clear yet why this is needed.
+maxcount=60
+dns_okay=false
+for (( iter = 0; iter < maxcount; iter++ )) {
+	date +%FT%TZ
+	if host oxidecomputer.com > /dev/null; then
+		dns_okay=true
+		break;
+	fi
+
+	sleep 1
+}
+if [[ $dns_okay != "true" ]]; then
+	fail "failed to lookup oxidecomputer.com in DNS $maxcount times"
+fi
+
 # Fetch both the common tarball and the one for this role.
 /var/tmp/fetcher "$VMI_S3BUCKET" "vminit-common.tgz" \
     > /var/tmp/vminit-common.tgz
