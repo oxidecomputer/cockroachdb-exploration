@@ -78,7 +78,7 @@ chmod +x /var/tmp/fetcher
 maxcount=60
 dns_okay=false
 for (( iter = 0; iter < maxcount; iter++ )) {
-	date +%FT%TZ
+	echo "$(date +%FT%TZ): attempt $iter of $maxcount"
 	if host oxidecomputer.com > /dev/null; then
 		dns_okay=true
 		break;
