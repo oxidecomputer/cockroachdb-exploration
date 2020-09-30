@@ -9107,9 +9107,472 @@ As I mentioned in yesterday's notes (9/28), there were a few notable spikes in l
 * At 9/29 10:42Z, there was a much bigger latency spike, with p95 shooting to 15ms and p99 shooting to 40ms.  Throughput correspondingly plummeted.  Latency and throughput seemed to go back to normal quickly.  However, from that point, store 12 started doing a lot less qps and the other stores did more.  CPU utilization and disk utilization shifted around a bit. There was also a big spike in network traffic -- only about 6-8 MBps, but that's 6-8 times what was happening before that.  There didn't appear to be any I/O problems.  There were a bunch of leaseholder changes, though -- db5 gave up 4 of its 17 leases.  Generally, the cluster became more balanced in terms of leaseholders.  p99 Heartbeat latency shot up briefly to 2.5s.  There were no SQL errors.
 
 
-=== Next steps
+== 2020-09-30
+
+Plan for the day:
 
 * Review overnight results from NVME cluster
 * Run expansion, contraction tests on the NVME cluster
 * Review README to see what other experiments are worth doing before writing upr esults
 * Review another day of the long-running workload?
+
+=== Overnight workload on NVME cluster
+
+When I got on around 15:30Z, I found that the monitoring VM ran out of disk space.  I fixed this by freeing up a small amount of space (removing the bootstrap stuff in `/var/tmp`), halting the VM, using Terraform to set the volume size from 10 GiB to 30 GiB, and then booting the VM again.  It came up with 20 GiB free.  Now that it's back up, based on when the metric graphs crashed, it looks to me like it ran out of disk space around 14:50Z -- I didn't miss it by that much (but I probably wouldn't have noticed anyway).
+
+Ironically, I had tried to add a graph of disk space available on the monitoring VM yesterday, but I couldn't because the only Prometheus metrics we have for that right now come from CockroachDB, which isn't running there.
+
+15:48Z: The NVME cluster database is at 73.7 GiB per node.  CockroachDB reports 221 GiB used -- right on for the three nodes.  This is plenty big enough.  I'm going to stop the "kv" workload running on the load generator and check the results.
+
+It looks like one of them bombed out not long ago:
+
+[source,text]
+----
+root@loadgen0:~/nvme# fuser *.out
+1.out:      628o
+2.out:      633o
+3.out:
+root@loadgen0:~/nvme# tail 3.out
+54356.9s        0           27.1           36.7    142.6    285.2    369.1   1073.7 write
+54416.9s        0           34.1           36.7     96.5    234.9    419.4    838.9 write
+54476.9s        0           37.6           36.7     83.9    226.5    419.4    738.2 write
+54536.9s        0           33.3           36.7     92.3    285.2    570.4    771.8 write
+54596.9s        0           26.0           36.7    151.0    302.0    436.2    604.0 write
+54656.9s        0           27.9           36.7    142.6    268.4    469.8    771.8 write
+54716.9s        0           41.2           36.7     83.9    184.5    243.3    704.6 write
+54776.9s        0           37.5           36.7     92.3    201.3    285.2    486.5 write
+54836.9s        0           27.9           36.7    134.2    260.0    318.8    486.5 write
+Error: ERROR: result is ambiguous (error=unable to dial n1: breaker open [exhausted]) (SQLSTATE 40003)
+root@loadgen0:~/nvme# ls -l 3.out
+-rw-------   1 root     root       86464 Sep 30 14:09 3.out
+root@loadgen0:~/nvme#
+----
+
+That may be worth looking into.  The other two report no problems:
+
+[source,text]
+----
+root@loadgen0:~/nvme# tail 1.out 2.out
+==> 1.out <==
+60416.6s        0           32.2           37.1     65.0    419.4    604.0   1040.2 write
+60476.6s        0           26.8           37.1     67.1    453.0    570.4   1006.6 write
+60536.6s        0           31.0           37.1     65.0    419.4    520.1    805.3 write
+60596.6s        0           18.7           37.1    184.5    486.5    637.5    704.6 write
+60656.6s        0           27.9           37.1     67.1    436.2    536.9    738.2 write
+60716.6s        0           30.8           37.1     65.0    419.4    570.4    704.6 write
+60776.6s        0           27.7           37.1     67.1    419.4    520.1    704.6 write
+60836.6s        0           14.7           37.0    302.0    570.4    704.6   1409.3 write
+60896.6s        0           24.7           37.0     71.3    469.8    604.0    838.9 write
+60956.6s        0           24.7           37.0     67.1    503.3    637.5    704.6 write
+
+==> 2.out <==
+60416.6s        0           30.0           36.0     67.1    453.0    637.5    872.4 write
+60476.6s        0           27.1           36.0     67.1    436.2    604.0    872.4 write
+60536.6s        0           29.0           36.0     71.3    419.4    570.4    838.9 write
+60596.6s        0           19.1           36.0    109.1    520.1    637.5    738.2 write
+60656.6s        0           27.0           36.0     71.3    453.0    604.0    771.8 write
+60716.6s        0           29.5           36.0     67.1    419.4    604.0    738.2 write
+60776.6s        0           25.7           36.0     71.3    453.0    536.9    671.1 write
+60836.6s        0           14.2           35.9    318.8    604.0    738.2    872.4 write
+60896.6s        0           25.5           35.9     71.3    469.8    604.0    838.9 write
+60956.6s        0           21.9           35.9     75.5    520.1    637.5    771.8 write
+----
+
+The overnight metrics show three spikes in error rate up to 0.05 errors per second.  Throughput per node and per store are reasonably balanced.  Latency was pretty okay until p95 started shooting up around 14:30Z.  I wonder if this is somehow related to the monitoring VM issue?  I don't see a corresponding increase in p99 in the CockroachDB adminui.  The increase in the Grafana graph may be some Prometheus/Grafana artifact?  I confirm that Prometheus just shows a big gap here, not a big slow climb.  I don't know why Grafana shows a big slow climb for the exact same query.
+
+A few notes about the workload while it's running:
+
+* CPU utilization was high on all db CPUs -- above 80% nearly all the time.
+* Disk busyness increased slowly most of the time, but never exceeded about 30% utilization.  Average disk I/o was generally under 1ms, with occasional outliers up to 2ms.  Writing 50-100 MBps, which isn't bad, but not that big.  Reading about 50 MBps.
+* There were some splits, not surprisingly, but these weren't correlated with the errors.
+* Heartbeat latency was generally under 400ms, but did see excursions into the single-digit seconds up to about 4.5s.
+
+Let's take a look at the balance of ranges per node:
+
+[source,text]
+----
+root@loadgen0:~/nvme# cockroach sql --host 192.168.1.53 --execute 'select lease_holder, count(*) from [show ranges from database kv] group by lease_holder'
+  lease_holder | count
+---------------+--------
+             1 |    93
+             3 |    84
+             2 |    79
+(3 rows)
+
+Time: 462.191277ms
+
+root@loadgen0:~/nvme# cockroach sql --host 192.168.1.53 --execute 'select replicas,count(*) from [show ranges from database kv] group by replicas'
+  replicas | count
+-----------+--------
+  {1,2,3}  |   256
+(1 row)
+
+Time: 438.805587ms
+----
+
+That's a good number of ranges and their leases are well distributed.  The "kv" database is reported to be 219.7 GiB.
+
+
+=== Online expansion testing on NVME cluster
+
+16:40Z: I'm now going to start some mixed read-write workloads, one for each current database node:
+
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.53:26257/kv?sslmode=disable
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.63:26257/kv?sslmode=disable
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.181:26257/kv?sslmode=disable
+----
+
+1800Z: looking back at the last 80m or so:
+
+* throughput: 1300 selects / sec + 330 inserts / sec
+* latency: p95 ~ 12ms, p99 ~20ms
+* balance: pretty even, both by node and by store
+* no errors
+* CPU utilization: 80-90% on all nodes
+* disk utilization: 20-30% busy on all nodes
+* disk I/O time: all under 400us
+* all metrics crashed around 17:09: network I/O, disk I/O, throughput, CPU utilization.  It's not clear why.  There were no range operations.  There were some internal errors.  RT latency shot up above 5s.  It does look like there were a few lease transfers.
+
+I think it might be a mistake to do this test with CPUs as busy as they are.  How can I change that?  I could make the test I/O bound, maybe by doing larger writes -- at a cost in latency and throughput, which probably would make it a little less consistent.  That seems worth poking at anyway.  I'm going to try it, replacing the load generators with:
+
+[source,text]
+----
+cockroach workload run kv --max-block-bytes 1024 --min-block-bytes 1024 --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.53:26257/kv?sslmode=disable
+cockroach workload run kv --max-block-bytes 1024 --min-block-bytes 1024 --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.63:26257/kv?sslmode=disable
+cockroach workload run kv --max-block-bytes 1024 --min-block-bytes 1024 --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.181:26257/kv?sslmode=disable
+----
+
+1K isn't that large, though, and it may not make a big difference in being I/O bound or not.  It could even make it worse, if we're memcpy'ing this around.
+
+1804Z: applied this change.  Will observe for about 10 minutes.  If CPU utilization is still high, it may make more sense to just reduce the load generator concurrency.  This isn't supposed to be a major stress test so much as what happens when under moderate load and we expand or contract the cluster.
+
+In the meantime, I'll provision the next three NVME db nodes with Terraform.  Ran into the DNS issue with that.
+
+1816Z: the change in workload didn't really help.  CPU utilization is now a bit more spread out, which means some CPUs are actually busier.  I'm going to cut back the concurrency of the load generators instead (but I'll keep the block size change because that seems more representative of a real workload anyway).
+
+1838Z: actually made the concurrency change at the load generators.
+
+1929Z: since I made that change, CPU utilization did decrease and ranges from about 58% to 85%, which is still high, but has some headroom.  We'll give it a shot.  I don't want to reduce the concurrency much further.
+
+1931Z: enabled CockroachDB on nvmedb4.
+
+2038Z: summary of impact of that:
+
+* initial crash in throughput, but not quite to zero. p95 from about 8ms to a 23ms.  p99 from about 18ms to 125ms.
+* after that: about 30 minutes of degraded performance, lasting until about 20:03Z: p95 latency ranged from 15-25ms, p99 ranged from 30-80ms.  Throughput ranged from 150-300 qps per node (120 inserts and about 500 selects overall).
+* balance: QPS per node remained pretty even throughout.  (I did not create a load generator for the new node so it didn't get any new queries.)  QPS per store also evened out by about 20:03Z.
+* errors: no runtime errors reported by CockroachDB
+* CPU utilization: spread out quite a bit, from 20% to 85%, from 19:31 to 20:03 or so.  After that, the bands became tighter than before, with most CPUs around 65%-75% utilization.  The new node, nvmedb4, is notably less busy than the others, around 40-50% per CPU.
+* Disk utilization: aside from the new node, disk %busy spread out more, but it didn't really go up a whole lot, peaking around 25-30%.  After things settled down, the bands re-established around 13% and 9%.
+* Disk I/O average latency: essentially unaffected in most nodes.  On nvmedb4, latency rose up to 3-4ms.
+* Disk I/O: some nodes read read a lot more data than they were before (up to about 200 MBps at times).  nvmedb4 wrote a ton of data, up to about 200 MBps at times.
+* Network I/O: many nodes did a lot more outbound network throughput (up to 30 MBps).  nvmedb4 was the only one with significant inbound throughput.
+* Disk saturation: the device queue depth was largely 1 for most nodes except for nvmedb4, where it rose up to 11 at times.  Average I/O time queued in the driver was well under 15us.
+* The "replicas per node" graph and "leaseholders per node" graph show a lot of rebalancing happening between 19:31 and 20:03 or so.  The leaseholders graph in particular shows a lot of erratic behavior, while the replicas graph is quite smooth.  We see a good number of adds and removes during this period, but no splits or merges.
+* Heartbeat latency saw a few multi-second excursions, but they seemed to be largely outside the window where we were doing work.
+* There were some internal errors for most of the rebalance period.
+* The clock offset showed brief spikes much higher than we typically see, but still under about 3ms in variance between nodes.
+* In terms of disk space used (as reported by CockroachDB): the existing nodes fell from 75.5 GiB to 59.2 GiB.  The new node went from zero to 56.6 GiB.
+
+Overall, this seems pretty good.  Obviously there's some considerable degradation while rebalancing is underway.  However, we haven't tuned this system at all, not in terms of I/O (e.g., I/Os issued concurrently to devices, ZFS throttle), nor networking, nor any CockroachDB tunables, etc.
+
+Let's do this a few more times.
+
+I'm going to take this opportunity to use Joshua's new image that fixes the DNS problem (see "Debugging DNS issue" section from today).
+Oops: I forgot that there's no way for me to tell Terraform to do this only for the last two nodes.  This took some cleaning up because one of the two new VMs ran into the DNS bug again.  I know how to workaround that now, but doing so clobbers the system's hostname.  Fixed.
+
+21:09Z: enable cockroachdb on nvmedb5.
+
+For the next round, I have the idea of going back up to concurrency 4 to see what happens.  I wonder whether the rebalancing activities increase latency, but do not decrease throughput capacity.  That is, latency goes up because there's more I/O going on and so some queueing, but we're not at the limits of CPU, disk, or network.
+
+22:10Z: looking at impact.  As before:
+
+* there's a long period of rebalancing after the node comes up.  This was from 21:09Z to 21:33Z.
+* there's an initial big latency spike and throughput drop, but not nearly to zero throughput.  peak p95 = 20ms, peak p99 = 55ms.  This lasts about 4 minutes.
+* during the rest of the rebalancing period, latency is elevated and throughput reduced, but not as severely.  peak p95 = 15ms, pea p99 = 40ms.
+* balance is good in terms of queries per second per node and per store, particularly after rebalancing is done.
+* There were no errors reported by CockroachDB (nor the clients).
+* The rest of the metrics behaved similarly to the last restart.
+
+22:15Z: I'm going to enable CockroachDB on nvmedb6.
+
+22:26Z: We're partway through the rebalance period.  I'm going to double the concurrency of the load generators.
+
+22:35Z: rebalancing is done.
+
+As expected, this looks a lot like the previous rounds.  Critically, there were no errors, and p95/p99 was no worse than the other cases.  In this case, I increased concurrency on the clients partway through, and we can see that in the throughput numbers: they went up to about what they were before, though they were less stable.
+
+I'm going to reduce the concurrency on the clients again in anticipation of shrinking the cluster.
+
+22:44Z: reducing client concurrency back to two.
+
+For more, see below section on "Online contraction"
+
+
+=== Debugging DNS issue
+
+I've found a few of the NVME nodes to come up with empty /etc/resolv.conf files.  I'm not sure why.  I added a workaround in vminit.sh for a temporary DNS issue, but this appears to require operator intervention.  Also, the workaround seems to have a bug: it seems to iterate much longer than 60 seconds.  It did eventually give up, though: I think the problem was really that the failures took a long time (13 seconds, in one case).
+
+What about /etc/resolv.conf?  Well it hasn't been touched since Sep 7, which is long before I did this, and it's the same date this image was created:
+
+[source,text]
+----
+root@ip-192-168-1-138:~/.ssh# ls -l /etc/resolv.conf
+-rw-r--r--   1 root     root           0 Sep  7 08:51 /etc/resolv.conf
+root@ip-192-168-1-138:~/.ssh#
+----
+
+The DNS server is in the DHCP info:
+
+[source,text]
+----
+root@ip-192-168-1-138:~/.ssh# dhcpinfo DNSserv
+192.168.0.2
+root@ip-192-168-1-138:~/.ssh#
+----
+
+What normally creates that file?  Maybe we can guess from its timestamp:
+
+[source,text]
+----
+root@nvmedb4:~# ls -lE /etc/resolv.conf
+-rw-r--r--   1 root     root          57 2020-09-30 18:08:08.094641845 +0000 /etc/resolv.conf
+root@nvmedb4:~#
+----
+
+That's after every SMF service has started:
+
+[source,text]
+----
+root@nvmedb4:~# svcs | tail
+online         18:08:11 svc:/milestone/multi-user-server:default
+online         18:08:11 svc:/system/intrd:default
+online         18:08:11 svc:/system/boot-config:default
+online         18:08:11 svc:/system/zones:default
+online         18:08:11 svc:/network/rpc/gss:default
+online         18:08:11 svc:/network/security/ktkt_warn:default
+online         18:08:14 svc:/system/update-man-index:default
+online         18:08:55 svc:/application/node-exporter:default
+online         18:08:55 svc:/application/illumos-exporter:default
+online         18:09:02 svc:/network/chrony:default
+root@nvmedb4:~# 
+----
+
+I had suspected maybe the metadata agent did this, but the `illumos/metadata` agent seems to do everything in its start method, and of course finished before that time too:
+
+[source,text]
+----
+root@nvmedb4:~# less $(svcs -L illumos/metadata)
+Sep 30 18:08:07.005 INFO no user-data?
+Sep 30 18:08:07.006 INFO ----- WRITE FILE: /var/metadata/stamp ------ [
+    "i-05af0ba567578e56e",
+]
+Sep 30 18:08:07.006 INFO ok, run complete
+[ Sep 30 18:08:07 Method "start" exited with status 0. ]
+----
+
+We can look for services that wrote to their log file after that point:
+
+[source,text]
+----
+root@nvmedb4:/var/svc/log# ls -lrtE
+...
+-rw-r--r--   1 root     root         162 2020-09-30 18:08:08.069886224 +0000 network-netmask:default.log
+-rw-r--r--   1 root     root         286 2020-09-30 18:08:08.148259354 +0000 network-service:default.log
+-rw-r--r--   1 root     root         125 2020-09-30 18:08:08.212350534 +0000 network-dns-client:default.log
+-rw-r--r--   1 root     root         511 2020-09-30 18:08:08.238971476 +0000 system-name-service-cache:default.log
+-rw-r--r--   1 root     root          80 2020-09-30 18:08:08.260438210 +0000 milestone-name-services:default.log
+-rw-r--r--   1 root     root         174 2020-09-30 18:08:08.307891082 +0000 milestone-single-user:default.log
+-rw-r--r--   1 root     root          80 2020-09-30 18:08:08.374340219 +0000 milestone-sysconfig:default.log
+-rw-r--r--   1 root     root         205 2020-09-30 18:08:08.546184138 +0000 system-utmp:default.log
+-rw-r--r--   1 root     root         115 2020-09-30 18:08:08.596736120 +0000 system-console-login:default.log
+-rw-r--r--   1 root     root         185 2020-09-30 18:08:08.648592906 +0000 system-filesystem-local:default.log
+-rw-r--r--   1 root     root         146 2020-09-30 18:08:08.788037812 +0000 system-sac:default.log
+-rw-r--r--   1 root     root         170 2020-09-30 18:08:08.970424814 +0000 system-boot-archive-update:default.log
+-rw-r--r--   1 root     root         204 2020-09-30 18:08:08.986720293 +0000 system-cron:default.log
+-rw-r--r--   1 root     root         167 2020-09-30 18:08:09.479851668 +0000 network-shares-group:default.log
+-rw-r--r--   1 root     root         165 2020-09-30 18:08:09.675849537 +0000 network-routing-legacy-routing:ipv4.log
+-rw-r--r--   1 root     root         163 2020-09-30 18:08:09.762223579 +0000 network-shares-group:zfs.log
+-rw-r--r--   1 root     root         165 2020-09-30 18:08:09.772953297 +0000 network-routing-route:default.log
+-rw-r--r--   1 root     root         165 2020-09-30 18:08:09.834463578 +0000 network-routing-rdisc:default.log
+-rw-r--r--   1 root     root         210 2020-09-30 18:08:09.856237220 +0000 network-rpc-bind:default.log
+-rw-r--r--   1 root     root         120 2020-09-30 18:08:09.868664609 +0000 network-routing-legacy-routing:ipv6.log
+-rw-r--r--   1 root     root         396 2020-09-30 18:08:09.935838304 +0000 network-routing-setup:default.log
+-rw-r--r--   1 root     root         120 2020-09-30 18:08:09.944938547 +0000 network-routing-ripng:default.log
+-rw-r--r--   1 root     root         212 2020-09-30 18:08:09.961278299 +0000 system-filesystem-autofs:default.log
+-rw-r--r--   1 root     root         120 2020-09-30 18:08:09.978216364 +0000 network-ipv4-forwarding:default.log
+-rw-r--r--   1 root     root         120 2020-09-30 18:08:10.022797764 +0000 network-ipv6-forwarding:default.log
+-rw-r--r--   1 root     root         206 2020-09-30 18:08:10.135243259 +0000 system-system-log:default.log
+-rw-r--r--   1 root     root         162 2020-09-30 18:08:10.156535793 +0000 system-dumpadm:default.log
+-rw-r--r--   1 root     root         154 2020-09-30 18:08:10.464242805 +0000 system-fmd:default.log
+-rw-r--r--   1 root     root         267 2020-09-30 18:08:10.999871774 +0000 network-ssh:default.log
+-rw-r--r--   1 root     root        2787 2020-09-30 18:08:11.283491673 +0000 network-inetd-upgrade:default.log
+-rw-r--r--   1 root     root         205 2020-09-30 18:08:11.332285930 +0000 network-inetd:default.log
+-rw-r--r--   1 root     root         542 2020-09-30 18:08:11.480240435 +0000 milestone-multi-user:default.log
+-rw-r--r--   1 root     root         144 2020-09-30 18:08:11.629491617 +0000 milestone-multi-user-server:default.log
+-rw-r--r--   1 root     root         166 2020-09-30 18:08:11.654995907 +0000 system-boot-config:default.log
+-rw-r--r--   1 root     root         205 2020-09-30 18:08:11.662760725 +0000 system-intrd:default.log
+-rw-r--r--   1 root     root         211 2020-09-30 18:08:11.710819459 +0000 system-zones:default.log
+-rw-r--r--   1 root     root         283 2020-09-30 18:08:14.613863809 +0000 system-update-man-index:default.log
+-rw-r--r--   1 root     root        1504 2020-09-30 18:08:55.271910301 +0000 application-node-exporter:default.log
+-rw-r--r--   1 root     root         302 2020-09-30 18:09:02.015323471 +0000 network-chrony:default.log
+-rw-r--r--   1 root     root         165 2020-09-30 18:38:46.431883271 +0000 application-cockroachdb:default.log
+-rw-r--r--   1 root     root       27753 2020-09-30 18:42:05.774647039 +0000 application-illumos-exporter:default.log
+----
+
+That's obviously quite a few.  dns-client looks relevant, but doesn't seem to do anything.  network-service's start method _does_ look relevant!  It rewrites /etc/resolv.conf.  We don't have XTRACE logs from this run, but if I evaluate it by hand, it does look like it should do the right thing.  I wonder if we hadn't fetched the DHCP params when it ran?  On the busted system, it ran at 18:07:53:
+
+[source,text]
+----
+root@ip-192-168-1-138:~/.ssh# tail $(svcs -L network/service)
+[ Sep 30 18:07:51 Enabled. ]
+[ Sep 30 18:07:53 Executing start method ("/lib/svc/method/net-svc start"). ]
+[ Sep 30 18:07:53 Timeout override by svc.startd.  Using infinite timeout. ]
+[ Sep 30 18:07:53 Method "start" exited with status 0. ]
+[ Sep 30 18:08:00 Rereading configuration. ]
+[ Sep 30 18:08:00 No 'refresh' method defined.  Treating as :true. ]
+root@ip-192-168-1-138:~/.ssh# 
+----
+
+What time did the illumos/metadata agent configure the xnf0 interface with DHCP?
+
+[source,text]
+----
+root@ip-192-168-1-138:~/.ssh# cat $(svcs -L illumos/metadata)
+[ Sep 30 18:07:50 Enabled. ]
+[ Sep 30 18:07:53 Executing start method ("/usr/lib/metadata | tee /dev/msglog"). ]
+...
+Sep 30 18:07:57.989 INFO ENSURE IPv4 DHCP INTERFACE: xnf0
+Sep 30 18:07:57.989 INFO ENSURE INTERFACE: xnf0
+Sep 30 18:07:58.101 INFO INTERFACES: [
+    "lo0",
+]
+Sep 30 18:07:58.101 INFO interface xnf0 NEEDS CREATION
+Sep 30 18:07:58.195 INFO target IP name: xnf0/dhcp
+Sep 30 18:07:58.218 INFO ADDRESSES: [IpadmAddress { name: "lo0/v4", type_: "static", state: "ok", cidr: "127.0.0.1/8" }, IpadmAddress { name: "lo0/v6", type_: "static", state: "ok", cidr: "::1/128" }]
+Sep 30 18:07:58.218 INFO ipadm DHCP address NEEDS CREATION
+Sep 30 18:08:03.554 INFO address state: Some(IpadmAddress { name: "xnf0/dhcp", type_: "dhcp", state: "ok", cidr: "192.168.1.138/24" })
+Sep 30 18:08:03.554 INFO ok, interface xnf0 address 192.168.1.138/24 (dhcp) complete
+----
+
+This looks to me like a missing dependency -- network/service may not to start after illumos/metadata -- but I'm not sure that's correct either.
+
+Joshua has fixed this issue in a new version of the AMI: `ami-01bb2865054e219c1`.
+
+
+=== Online contraction testing on NVME cluster
+
+This section resumes after the above testing on online expansion.
+
+22:58Z: begin decommissionoing node 6 using:
+
+[source,text]
+----
+root@loadgen0:~# COCKROACH_HOST=192.168.1.181 cockroach node status
+  id |       address       |     sql_address     |                 build                  |            started_at            |            updated_at            | locality | is_available | is_live
+-----+---------------------+---------------------+----------------------------------------+----------------------------------+----------------------------------+----------+--------------+----------
+   1 | 192.168.1.53:26257  | 192.168.1.53:26257  | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-29 21:08:45.761724+00:00 | 2020-09-30 22:30:10.494985+00:00 |          | true         | true
+   2 | 192.168.1.181:26257 | 192.168.1.181:26257 | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-29 21:08:46.553751+00:00 | 2020-09-30 22:30:12.317176+00:00 |          | true         | true
+   3 | 192.168.1.63:26257  | 192.168.1.63:26257  | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-29 21:08:46.632391+00:00 | 2020-09-30 22:30:14.237919+00:00 |          | true         | true
+   4 | 192.168.1.243:26257 | 192.168.1.243:26257 | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-30 19:30:58.847358+00:00 | 2020-09-30 22:30:13.533486+00:00 |          | true         | true
+   5 | 192.168.1.123:26257 | 192.168.1.123:26257 | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-30 21:09:25.493063+00:00 | 2020-09-30 22:30:11.898783+00:00 |          | true         | true
+   6 | 192.168.1.211:26257 | 192.168.1.211:26257 | v20.2.0-alpha.1-1729-ge9c7cc561c-dirty | 2020-09-30 22:14:51.639274+00:00 | 2020-09-30 22:30:14.112185+00:00 |          | true         | true
+(6 rows)
+root@loadgen0:~# time COCKROACH_HOST=192.168.1.181 cockroach node decommission 6
+----
+
+This took 11m16s.
+
+23:26Z: started decommissioning node 5.
+
+23:41Z: This took 14m.
+
+I'm now going to shut down cockroachdb on nodes 6 and 5.  This should have no impact.  I'll wait 5 minutes to be sure.
+
+23:47Z: begin decommissioning node 4
+
+
+
+=== Another review of long-running workload
+
+For some reason, all the metrics went to zero from 2020-09-29T12:00 to 2020-09-30T20:00Z.  There was the monitoring issue mentioned above, where the monitoring zone ran out of disk space, but I thought that didn't affect the other cluster until 15:00 and it was resolved by 16:00.  As I look at the other cluster, though, I see a similar gap from 12:00 to 20:00Z.  That doesn't make sense, though -- I was using those metrics just a few hours ago!  I've confirmed it's just gone from Prometheus for that 8-hour block.  Looking at the Prometheus log, I do see it reporting corruption around 15:44Z and deleting records newer than the corrupted segment, which is probably not unreasonable.  However, I don't know why any data after that point would be missing.  There were some failed compactions after that:
+
+[source,text]
+----
+[ Sep 30 15:44:03 Method "start" exited with status 0. ]
+level=info ts=2020-09-30T15:44:04.334Z caller=main.go:343 msg="Starting Prometheus" version="(version=2.20.1, branch=HEAD, revision=983ebb4a513302315a8117932ab832815f85e3d2)"
+level=info ts=2020-09-30T15:44:04.334Z caller=main.go:344 build_context="(go=go1.14.7, user=dap@ip-192-168-1-134.us-west-2.compute.internal, date=20200831-21:15:27)"
+level=info ts=2020-09-30T15:44:04.335Z caller=main.go:345 host_details=(illumos)
+level=info ts=2020-09-30T15:44:04.335Z caller=main.go:346 fd_limits="(soft=65536, hard=65536)"
+level=info ts=2020-09-30T15:44:04.335Z caller=main.go:347 vm_limits="(soft=unlimited, hard=unlimited)"
+level=error ts=2020-09-30T15:44:04.339Z caller=query_logger.go:71 component=activeQueryTracker msg="Failed to read query log file" err=EOF
+level=info ts=2020-09-30T15:44:04.344Z caller=main.go:684 msg="Starting TSDB ..."
+level=info ts=2020-09-30T15:44:04.344Z caller=web.go:524 component=web msg="Start listening for connections" address=0.0.0.0:9090
+level=info ts=2020-09-30T15:44:04.355Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1599606341347 maxt=1599688800000 ulid=01EHXHP2KD96XQYKHQQ55JFWCG
+level=info ts=2020-09-30T15:44:04.358Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1599775200000 maxt=1600300800000 ulid=01EJGX72VDPKAVDHTNQPD1YHJ8
+level=info ts=2020-09-30T15:44:04.360Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1600300800000 maxt=1600884000000 ulid=01EJYC8A6J90S612N76YPK71J0
+level=info ts=2020-09-30T15:44:04.363Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1600884000000 maxt=1601078400000 ulid=01EK45MYJ9VZHB61XEJFGGCWJH
+level=info ts=2020-09-30T15:44:04.365Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601078400000 maxt=1601272800000 ulid=01EK9Z1WVHX606D5Q9X50GDZQS
+level=info ts=2020-09-30T15:44:04.369Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601272800000 maxt=1601337600000 ulid=01EKBWV3YC0A0BCGBHN62W2D92
+level=info ts=2020-09-30T15:44:04.371Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601337600000 maxt=1601402400000 ulid=01EKDTMNM5AH6K827A5E6T4AXB
+level=info ts=2020-09-30T15:44:04.373Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601402400000 maxt=1601424000000 ulid=01EKEF7RSGVAT2TQ4KMZ3ABDEM
+level=info ts=2020-09-30T15:44:04.377Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601445600000 maxt=1601452800000 ulid=01EKF3TT08JDJHPK92WNAR0DMM
+level=info ts=2020-09-30T15:44:04.379Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601424000000 maxt=1601445600000 ulid=01EKF3TZ6TKK4K7QCT57CSP4FN
+level=info ts=2020-09-30T15:44:04.382Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601452800000 maxt=1601460000000 ulid=01EKFAPH4VS7R183BPX43XWGQQ
+level=info ts=2020-09-30T15:44:04.384Z caller=repair.go:59 component=tsdb msg="Found healthy block" mint=1601460000000 maxt=1601467200000 ulid=01EKFHJ8DGN5NR4SZ52CE6QMZB
+level=info ts=2020-09-30T15:44:04.646Z caller=head.go:641 component=tsdb msg="Replaying on-disk memory mappable chunks if any"
+level=error ts=2020-09-30T15:44:05.660Z caller=head.go:646 component=tsdb msg="Loading on-disk chunks failed" err="iterate on on-disk chunks: out of sequence m-mapped chunk for series ref 294163"
+level=info ts=2020-09-30T15:44:05.661Z caller=head.go:757 component=tsdb msg="Deleting mmapped chunk files"
+level=info ts=2020-09-30T15:44:05.661Z caller=head.go:760 component=tsdb msg="Deletion of mmap chunk files failed, discarding chunk files completely" err="cannot handle error: iterate on on-disk chunks: out of sequence m-mapped chunk for series ref 294163"
+level=info ts=2020-09-30T15:44:05.661Z caller=head.go:655 component=tsdb msg="On-disk memory mappable chunks replay completed" duration=1.01411139s
+level=info ts=2020-09-30T15:44:05.661Z caller=head.go:661 component=tsdb msg="Replaying WAL, this may take a while"
+level=info ts=2020-09-30T15:44:05.912Z caller=head.go:687 component=tsdb msg="WAL checkpoint loaded"
+level=info ts=2020-09-30T15:44:08.724Z caller=head.go:713 component=tsdb msg="WAL segment loaded" segment=365 maxSegment=370
+level=info ts=2020-09-30T15:44:12.372Z caller=head.go:713 component=tsdb msg="WAL segment loaded" segment=366 maxSegment=370
+level=info ts=2020-09-30T15:44:16.634Z caller=head.go:713 component=tsdb msg="WAL segment loaded" segment=367 maxSegment=370
+level=warn ts=2020-09-30T15:44:20.404Z caller=db.go:634 component=tsdb msg="Encountered WAL read error, attempting repair" err="read records: corruption in segment /mon/prometheus/var/data/wal/00000368 at 121864192: last record is torn"
+level=warn ts=2020-09-30T15:44:20.404Z caller=wal.go:354 component=tsdb msg="Starting corruption repair" segment=368 offset=121864192
+level=warn ts=2020-09-30T15:44:20.405Z caller=wal.go:362 component=tsdb msg="Deleting all segments newer than corrupted segment" segment=368
+level=warn ts=2020-09-30T15:44:20.405Z caller=wal.go:384 component=tsdb msg="Rewrite corrupted segment" segment=368
+level=info ts=2020-09-30T15:44:21.660Z caller=main.go:700 fs_type=unknown
+level=info ts=2020-09-30T15:44:21.661Z caller=main.go:701 msg="TSDB started"
+level=info ts=2020-09-30T15:44:21.661Z caller=main.go:805 msg="Loading configuration file" filename=/mon/prometheus/prometheus.yml
+level=info ts=2020-09-30T15:44:21.757Z caller=main.go:833 msg="Completed loading of configuration file" filename=/mon/prometheus/prometheus.yml
+level=info ts=2020-09-30T15:44:21.757Z caller=main.go:652 msg="Server is ready to receive web requests."
+level=info ts=2020-09-30T15:44:25.478Z caller=compact.go:495 component=tsdb msg="write block" mint=1601467200000 maxt=1601474400000 ulid=01EKFTZ7BJNE8DB6GRN36N7DWW duration=3.091098927s
+level=info ts=2020-09-30T15:44:25.599Z caller=head.go:804 component=tsdb msg="Head GC completed" duration=30.681058ms
+level=error ts=2020-09-30T15:44:25.600Z caller=db.go:685 component=tsdb msg="compaction failed" err="reload blocks: head truncate failed: truncate chunks.HeadReadWriter: maxt of the files are not set"
+level=info ts=2020-09-30T17:00:01.620Z caller=compact.go:495 component=tsdb msg="write block" mint=1601474400000 maxt=1601481600000 ulid=01EKFZ9PR4N2EZCR9QS0SN7BYR duration=1.48784649s
+level=info ts=2020-09-30T17:00:01.751Z caller=head.go:804 component=tsdb msg="Head GC completed" duration=36.009434ms
+level=error ts=2020-09-30T17:00:01.753Z caller=db.go:685 component=tsdb msg="compaction failed" err="reload blocks: head truncate failed: truncate chunks.HeadReadWriter: maxt of the files are not set"
+level=info ts=2020-09-30T19:00:03.327Z caller=compact.go:495 component=tsdb msg="write block" mint=1601481600000 maxt=1601488800000 ulid=01EKG65DX7A5B74KGCDGBZCX7Z duration=3.288402215s
+level=info ts=2020-09-30T19:00:03.483Z caller=head.go:804 component=tsdb msg="Head GC completed" duration=33.100722ms
+level=error ts=2020-09-30T19:00:03.483Z caller=db.go:685 component=tsdb msg="compaction failed" err="reload blocks: head truncate failed: truncate chunks.HeadReadWriter: maxt of the files are not set"
+level=info ts=2020-09-30T21:00:04.981Z caller=compact.go:495 component=tsdb msg="write block" mint=1601488800000 maxt=1601496000000 ulid=01EKGD1615A94M0XTXHHPGNFPZ duration=4.047633854s
+level=info ts=2020-09-30T21:00:05.163Z caller=head.go:804 component=tsdb msg="Head GC completed" duration=43.65002ms
+level=error ts=2020-09-30T21:00:05.163Z caller=db.go:685 component=tsdb msg="compaction failed" err="reload blocks: head truncate failed: truncate chunks.HeadReadWriter: maxt of the files are not set"
+level=error ts=2020-09-30T21:09:52.550Z caller=api.go:1486 component=web msg="error writing response" bytesWritten=0 err="write tcp [::1]:9090->[::1]:34017: write: broken pipe"
+level=error ts=2020-09-30T21:09:52.566Z caller=api.go:1486 component=web msg="error writing response" bytesWritten=0 err="write tcp [::1]:9090->[::1]:38283: write: broken pipe"
+level=error ts=2020-09-30T21:09:52.592Z caller=api.go:1486 component=web msg="error writing response" bytesWritten=0 err="write tcp [::1]:9090->[::1]:48519: write: broken pipe"
+level=error ts=2020-09-30T21:09:52.606Z caller=api.go:1486 component=web msg="error writing response" bytesWritten=0 err="write tcp [::1]:9090->[::1]:58922: write: broken pipe"
+level=info ts=2020-09-30T23:00:04.628Z caller=compact.go:495 component=tsdb msg="write block" mint=1601496000000 maxt=1601503200000 ulid=01EKGKWXFBP5VS22J30PS0GA4G duration=3.49728677s
+level=info ts=2020-09-30T23:00:04.827Z caller=head.go:804 component=tsdb msg="Head GC completed" duration=51.64078ms
+level=error ts=2020-09-30T23:00:04.827Z caller=db.go:685 component=tsdb msg="compaction failed" err="reload blocks: head truncate failed: truncate chunks.HeadReadWriter: maxt of the files are not set"
+----
+
+A https://github.com/prometheus/prometheus/issues/7245#issuecomment-646753932[similar experience is reported here].  Here's https://github.com/prometheus/prometheus/issues/5867[a related issue].  This is extremely frustrating.
+
+On the plus side, we do have the graphs from CockroachDB for this time.  They show consistent throughput and latency for the last 24 hours.
+
+=== Still TODO today:
+
+TODO today:
+- finish updating section above on contracting cluster (look for "23:47Z" above)
+- grab graphs from CockroachDB of throughput, replica count during this whole period and get those graphs into this repo
+
+=== Next steps
+
+* Review README for any more tests that we want to do now.  If none, start preparing write-up of results so far.
+* Shut down clusters!

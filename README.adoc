@@ -203,6 +203,10 @@ Is it expected that we'd see such massive impacts to latency when adding or remo
 
 It seems that `cockroach workload run kv` never reports a latency more than about 10 seconds, even when a node is partitioned for two minutes.  (It also reported no errors during that period.)  That seems wrong.  Relatedly? I have found that the p99 has only ever shot up to 10s, even when throughput seemed to go to zero for a few minutes (i.e., when expanding the cluster).  I haven't verified whether that's wrong or not.  I also saw 10s heartbeat latency for a node that was partitioned -- although most of the data points were actually 4.55s -- incredibly stable.
 
+=== Prometheus
+
+Is it worth trying to see what happens when it runs out of disk space by putting its text log and data on separate filesystems and seeing what it logs?  See 9/30 for description of apparent corruption when this happens, including data lost _after_ the corruption was supposedly repaired.
+
 == Caveats
 
 * Currently https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#storage[limited to 4 TiB of storage per node].
