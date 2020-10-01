@@ -16,7 +16,7 @@
   "gnetId": null,
   "graphTooltip": 1,
   "id": 8,
-  "iteration": 1601413771790,
+  "iteration": 1601519975792,
   "links": [
     {
       "$$hashKey": "object:784",
@@ -79,6 +79,8 @@
         "max": true,
         "min": true,
         "show": true,
+        "sort": "avg",
+        "sortDesc": true,
         "total": true,
         "values": true
       },
@@ -213,6 +215,8 @@
         "max": true,
         "min": true,
         "show": true,
+        "sort": "avg",
+        "sortDesc": true,
         "total": true,
         "values": true
       },
@@ -318,6 +322,8 @@
         "max": true,
         "min": true,
         "show": true,
+        "sort": "avg",
+        "sortDesc": true,
         "total": false,
         "values": true
       },
@@ -423,6 +429,8 @@
         "max": true,
         "min": true,
         "show": true,
+        "sort": "avg",
+        "sortDesc": true,
         "total": false,
         "values": true
       },
@@ -4166,7 +4174,7 @@
       "type": "row"
     }
   ],
-  "refresh": "10s",
+  "refresh": false,
   "schemaVersion": 26,
   "style": "dark",
   "tags": [
@@ -4177,7 +4185,7 @@
       {
         "allValue": null,
         "current": {
-          "selected": true,
+          "selected": false,
           "text": "crdb_exploration_nvmedb",
           "value": "crdb_exploration_nvmedb"
         },
@@ -4297,8 +4305,8 @@
     ]
   },
   "time": {
-    "from": "now-1h",
-    "to": "now"
+    "from": "2020-09-30T19:00:00.000Z",
+    "to": "2020-10-01T01:00:00.000Z"
   },
   "timepicker": {
     "refresh_intervals": [
@@ -4328,5 +4336,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 22
+  "version": 23
 }

@@ -9537,6 +9537,9 @@ The impact was similar to expansion: some increased latency and throughput durin
 
 00:13Z: disable cockroachdb on nvmedb4.
 
+0250Z: stopped workload
+
+Also gathered updated graphs with updated Prometheus (see below).
 
 === Another review of long-running workload
 
@@ -9609,11 +9612,9 @@ A https://github.com/prometheus/prometheus/issues/7245#issuecomment-646753932[si
 
 On the plus side, we do have the graphs from CockroachDB for this time.  They show consistent throughput and latency for the last 24 hours.
 
-=== Still TODO today:
+We also seem to be hitting https://github.com/prometheus/prometheus/issues/7753[this issue with compaction].  This actually gives a promising way forward.
 
-TODO today:
-- finish updating section above on contracting cluster (look for "23:47Z" above)
-- grab graphs from CockroachDB of throughput, replica count during this whole period and get those graphs into this repo
+0250Z update: updating to Prometheus 2.21 has gotten the data back!  It wasn't lost -- just unavailable.  I've updated the screenshots.
 
 === Next steps
 

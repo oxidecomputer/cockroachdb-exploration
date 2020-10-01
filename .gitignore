@@ -19,6 +19,7 @@ vminit/grafana-*illumos*amd64*.tar.gz
 vminit/mon/mon/grafana/grafana
 vminit/mon/mon/grafana/grafana-7.1.5-1598982438
 vminit/mon/mon/prometheus/prometheus
+vminit/mon/mon/prometheus/prometheus-old
 vminit/sysbench.tgz
 vminit/vminit-cockroachdb.tgz
 vminit/vminit-common.tgz
