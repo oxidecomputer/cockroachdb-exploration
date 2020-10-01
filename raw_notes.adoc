@@ -9493,6 +9493,49 @@ I'm now going to shut down cockroachdb on nodes 6 and 5.  This should have no im
 
 23:47Z: begin decommissioning node 4
 
+This took 22m41s and finished around 2020-10-01T00:10Z.
+
+Through this whole process, the load generators have reported a total of 3 failed queries:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 1259.9s        0           90.3          365.5      7.9     30.4     71.3    738.2 read
+ 1259.9s        0           22.4           91.4     11.0    226.5    637.5    805.3 write
+ 1319.9s        0          113.0          354.1      6.0     24.1     79.7    939.5 read
+ 1319.9s        0           27.4           88.5      9.4    117.4    536.9    805.3 write
+ 1379.9s        0           95.4          342.8      7.3     30.4     75.5    738.2 read
+ 1379.9s        0           24.1           85.7     12.1    167.8    604.0   1208.0 write
+ 1439.9s        0           87.3          332.2      6.0     25.2     52.4  10200.5 read
+ 1439.9s        0           20.5           83.0     10.5    302.0    671.1  10200.5 write
+E200930 23:08:39.587973 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n5: breaker open [exhausted]) (SQLSTATE 40003)
+ 1499.9s        2           63.0          321.4      8.1     35.7    218.1   5100.3 read
+ 1499.9s        2           15.5           80.3     10.0     60.8    486.5   9126.8 write
+ 1559.9s        2          133.1          314.2      4.5     17.8     39.8   7247.8 read
+ 1559.9s        2           33.0           78.5      6.6     56.6    536.9    973.1 write
+...
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+ 4859.7s        2           72.0          247.7     11.5     39.8     83.9    352.3 read
+ 4859.7s        2           17.8           61.8     17.8    285.2    570.4    771.8 write
+ 4919.7s        2           62.1          245.5     12.6     44.0     83.9    536.9 read
+ 4919.7s        2           15.3           61.3     19.9    385.9    604.0   1208.0 write
+ 4979.7s        2           65.4          243.3     13.6     46.1     88.1    520.1 read
+ 4979.7s        2           17.3           60.7     19.9    268.4    520.1    805.3 write
+ 5039.7s        2           40.0          240.9     13.6     48.2    100.7   9126.8 read
+ 5039.7s        2           10.7           60.1     22.0    453.0    671.1  11274.3 write
+E201001 00:08:29.690420 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n1: breaker open [exhausted]) (SQLSTATE 40003)
+ 5099.7s        3           29.8          238.4     12.1     79.7    268.4   8053.1 read
+ 5099.7s        3            7.6           59.5     19.9    503.3    872.4  13421.8 write
+ 5159.7s        3           82.4          236.6      8.1     29.4     56.6    318.8 read
+ 5159.7s        3           21.7           59.1     11.5    385.9    671.1    771.8 write
+...
+----
+
+These were all on the load generator pointed at n3 (192.168.1.181).
+
+The impact was similar to expansion: some increased latency and throughput during the rebalancing period.
+
+00:13Z: disable cockroachdb on nvmedb4.
 
 
 === Another review of long-running workload
