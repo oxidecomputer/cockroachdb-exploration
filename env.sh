@@ -69,6 +69,56 @@ function start_project_instances {
 }
 
 #
+# Generate the shell command to ssh to an instance
+#
+function project_ssh_cmd {
+	local kind which ip
+
+	kind="$1"
+	case "$kind" in
+		db|nvmedb)
+			which="$2"
+			if ! [[ $which =~ ^[0-9]*$ ]]; then
+				echo "bad number: \"$which\"" >&2
+				return
+			fi
+			if [[ -z "$which" ]]; then
+				which=0
+			else
+				which=$(( which - 1 ))
+			fi
+			;;
+		loadgen|mon)
+			which="0"
+			;;
+		*)
+			echo "unsupported kind (must be one of" \
+			    "\"db\", \"nvmedb\", \"loadgen\", or \"mon\")" >&2
+			return
+			;;
+	esac
+
+	ip="$(terraform output -json "${kind}_external_ip" | json $which)"
+	if [[ $? != 0 || -z "$ip" ]]; then
+		echo "failed to get IP from 'terraform output'" >&2
+		return
+	fi
+
+	echo "ssh -o StrictHostKeyChecking=accept-new root@$ip"
+}
+
+#
+# SSH to a remote instance.
+#
+function project_ssh {
+	local cmd
+
+	cmd="$(project_ssh_cmd "$@")" || return
+	echo "running: $cmd"
+	$cmd
+}
+
+#
 # Set up ssh tunnels for key services.
 #
 function start_project_ssh {
