@@ -10,7 +10,7 @@ locals {
   // Count of cluster nodes to create.
   ndbs = 6
   // Count of NVME cluster nodes to create.
-  ndbs_nvme = 6
+  ndbs_nvme = 3
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
