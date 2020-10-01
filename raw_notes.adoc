@@ -9620,3 +9620,11 @@ We also seem to be hitting https://github.com/prometheus/prometheus/issues/7753[
 
 * Review README for any more tests that we want to do now.  If none, start preparing write-up of results so far.
 * Shut down clusters!
+
+== 2020-10-01
+
+I've got a bunch of other stuff to do over the next few days, so I don't think it makes sense to keep the NVME cluster running.  I'm going to first reboot a node to see what happens (do we lose the local instance storage?  I assume so.)  Then I'm planning to undeploy them all.
+
+Yes, we do lose the local NVME device contents when we bounce the instance.  The failure mode is that we know about the "tank" pool, but ZFS reports it as faulted due to corrupt data.
+
+16:40Z: destroyed the whole NVME cluster and db6 from the other cluster (which hasn't been used in it for a while)

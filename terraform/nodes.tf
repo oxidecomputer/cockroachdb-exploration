@@ -8,9 +8,9 @@ locals {
   mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
-  ndbs = 6
+  ndbs = 5
   // Count of NVME cluster nodes to create.
-  ndbs_nvme = 3
+  ndbs_nvme = 0
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
@@ -21,9 +21,8 @@ locals {
   // configured at boot.  I'm leaving this commented-out for now because I'm not
   // ready to redeploy everything right now.
   // ami = "ami-01bb2865054e219c1"
-  // nvme_ami = "ami-01bb2865054e219c1"
   ami = "ami-012f34b61b75182e8"
-  nvme_ami = "ami-012f34b61b75182e8"
+  nvme_ami = "ami-01bb2865054e219c1"
 }
 
 // CockroachDB cluster nodes
