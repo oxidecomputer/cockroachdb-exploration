@@ -1,0 +1,79 @@
+root@192.168.1.121:26257/defaultdb> select variable, value from [show cluster settings];
+                        variable                        |        value
+--------------------------------------------------------+----------------------
+  cloudstorage.gs.default.key                           |
+  cloudstorage.http.custom_ca                           |
+  cloudstorage.timeout                                  | 10m0s
+  cluster.organization                                  |
+  cluster.preserve_downgrade_option                     |
+  diagnostics.forced_sql_stat_reset.interval            | 2h0m0s
+  diagnostics.reporting.enabled                         | true
+  diagnostics.reporting.interval                        | 1h0m0s
+  diagnostics.sql_stat_reset.interval                   | 1h0m0s
+  enterprise.license                                    |
+  external.graphite.endpoint                            |
+  external.graphite.interval                            | 10s
+  jobs.retention_time                                   | 336h0m0s
+  kv.allocator.load_based_lease_rebalancing.enabled     | true
+  kv.allocator.load_based_rebalancing                   | leases and replicas
+  kv.allocator.qps_rebalance_threshold                  | 0.25
+  kv.allocator.range_rebalance_threshold                | 0.05
+  kv.bulk_io_write.max_rate                             | 1.0 TiB
+  kv.closed_timestamp.follower_reads_enabled            | true
+  kv.protectedts.reconciliation.interval                | 5m0s
+  kv.range_split.by_load_enabled                        | true
+  kv.range_split.load_qps_threshold                     | 2500
+  kv.rangefeed.enabled                                  | false
+  kv.replication_reports.interval                       | 1m0s
+  kv.snapshot_rebalance.max_rate                        | 8.0 MiB
+  kv.snapshot_recovery.max_rate                         | 8.0 MiB
+  kv.transaction.max_intents_bytes                      | 262144
+  kv.transaction.max_refresh_spans_bytes                | 256000
+  server.auth_log.sql_connections.enabled               | false
+  server.auth_log.sql_sessions.enabled                  | false
+  server.clock.forward_jump_check_enabled               | false
+  server.clock.persist_upper_bound_interval             | 0s
+  server.consistency_check.max_rate                     | 8.0 MiB
+  server.eventlog.ttl                                   | 2160h0m0s
+  server.host_based_authentication.configuration        |
+  server.rangelog.ttl                                   | 720h0m0s
+  server.remote_debugging.mode                          | any
+  server.shutdown.drain_wait                            | 0s
+  server.shutdown.lease_transfer_wait                   | 5s
+  server.shutdown.query_wait                            | 10s
+  server.time_until_store_dead                          | 5m0s
+  server.user_login.timeout                             | 10s
+  server.web_session_timeout                            | 168h0m0s
+  sql.defaults.default_int_size                         | 8
+  sql.defaults.results_buffer.size                      | 16 KiB
+  sql.defaults.serial_normalization                     | rowid
+  sql.distsql.max_running_flows                         | 500
+  sql.log.slow_query.latency_threshold                  | 0s
+  sql.metrics.statement_details.dump_to_logs            | false
+  sql.metrics.statement_details.enabled                 | true
+  sql.metrics.statement_details.plan_collection.enabled | true
+  sql.metrics.statement_details.plan_collection.period  | 5m0s
+  sql.metrics.statement_details.threshold               | 0s
+  sql.metrics.transaction_details.enabled               | true
+  sql.notices.enabled                                   | true
+  sql.stats.automatic_collection.enabled                | true
+  sql.stats.automatic_collection.fraction_stale_rows    | 0.2
+  sql.stats.automatic_collection.min_stale_rows         | 500
+  sql.stats.histogram_collection.enabled                | true
+  sql.stats.multi_column_collection.enabled             | true
+  sql.stats.post_events.enabled                         | false
+  sql.temp_object_cleaner.cleanup_interval              | 30m0s
+  sql.trace.log_statement_execute                       | false
+  sql.trace.session_eventlog.enabled                    | false
+  sql.trace.txn.enable_threshold                        | 0s
+  timeseries.storage.enabled                            | true
+  timeseries.storage.resolution_10s.ttl                 | 240h0m0s
+  timeseries.storage.resolution_30m.ttl                 | 2160h0m0s
+  trace.debug.enable                                    | false
+  trace.lightstep.token                                 |
+  trace.zipkin.collector                                |
+  version                                               | 20.1-13
+(72 rows)
+
+Time: 2.18454ms
+

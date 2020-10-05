@@ -9113,7 +9113,7 @@ Plan for the day:
 
 * Review overnight results from NVME cluster
 * Run expansion, contraction tests on the NVME cluster
-* Review README to see what other experiments are worth doing before writing upr esults
+* Review README to see what other experiments are worth doing before writing up results
 * Review another day of the long-running workload?
 
 === Overnight workload on NVME cluster
@@ -9628,3 +9628,132 @@ I've got a bunch of other stuff to do over the next few days, so I don't think i
 Yes, we do lose the local NVME device contents when we bounce the instance.  The failure mode is that we know about the "tank" pool, but ZFS reports it as faulted due to corrupt data.
 
 16:40Z: destroyed the whole NVME cluster and db6 from the other cluster (which hasn't been used in it for a while)
+
+== 2020-10-05
+
+15:22Z: The workload on the non-NVME cluster has been running for over a week.  I've confirmed that it's still running, and running about the same, so I'm going to shut down the load generators and summarize the status.
+
+Recall that I initially expected to have a `N.out` summary file for each load generator (N=1 through N=5), but by mistake I clobbered 2.out and 3.out last week.  However, I _do_ have per-second histogram files for all five clients.  We can see these as the most recently updated files:
+
+[source,text]
+----
+root@loadgen0:~# ls -lrt
+total 91561
+...
+-rw-r--r--   1 root     root        5030 Sep 25 15:45 kv-histograms-2020-09-25T15:43:35Z.out
+-rw-r--r--   1 root     root        6774 Sep 25 15:47 kv-histograms-2020-09-25T15:43:57Z.out
+drwxr-xr-x   3 root     root          21 Sep 30 22:44 nvme
+-rw-------   1 root     root     2721308 Oct  5 15:22 4.out
+-rw-r--r--   1 root     root     24477624 Oct  5 15:22 kv-histograms-2020-09-25T15:45:34Z.out
+-rw-------   1 root     root     2720618 Oct  5 15:22 5.out
+-rw-r--r--   1 root     root     24501003 Oct  5 15:22 kv-histograms-2020-09-25T15:45:45Z.out
+-rw-------   1 root     root     2721218 Oct  5 15:23 1.out
+-rw-r--r--   1 root     root     24408415 Oct  5 15:23 kv-histograms-2020-09-25T15:44:53Z.out
+-rw-r--r--   1 root     root     24402901 Oct  5 15:23 kv-histograms-2020-09-25T15:45:01Z.out
+-rw-r--r--   1 root     root     24472346 Oct  5 15:23 kv-histograms-2020-09-25T15:45:22Z.out
+----
+
+We can use these to find and kill the five load generators:
+
+[source,text]
+----
+root@loadgen0:~# fuser 4.out 5.out 1.out kv-histograms-2020-09-25T15:45:01Z.out kv-histograms-2020-09-25T15:45:22Z.out
+4.out:      804o
+5.out:      810o
+1.out:      783o
+kv-histograms-2020-09-25T15:45:01Z.out:      790o
+kv-histograms-2020-09-25T15:45:22Z.out:      797o
+root@loadgen0:~# pargs 804 810 783 790 797
+804:    cockroach workload run kv --histograms kv-histograms-2020-09-25T15:45:34Z.out -
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --histograms
+argv[5]: kv-histograms-2020-09-25T15:45:34Z.out
+argv[6]: --concurrency
+argv[7]: 2
+argv[8]: --display-every=60s
+argv[9]: --read-percent
+argv[10]: 80
+argv[11]: --tolerate-errors
+argv[12]: postgresql://root@192.168.1.252:26257/kv?sslmode=disable
+
+810:    cockroach workload run kv --histograms kv-histograms-2020-09-25T15:45:45Z.out -
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --histograms
+argv[5]: kv-histograms-2020-09-25T15:45:45Z.out
+argv[6]: --concurrency
+argv[7]: 2
+argv[8]: --display-every=60s
+argv[9]: --read-percent
+argv[10]: 80
+argv[11]: --tolerate-errors
+argv[12]: postgresql://root@192.168.1.18:26257/kv?sslmode=disable
+
+783:    cockroach workload run kv --histograms kv-histograms-2020-09-25T15:44:53Z.out -
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --histograms
+argv[5]: kv-histograms-2020-09-25T15:44:53Z.out
+argv[6]: --concurrency
+argv[7]: 2
+argv[8]: --display-every=60s
+argv[9]: --read-percent
+argv[10]: 80
+argv[11]: --tolerate-errors
+argv[12]: postgresql://root@192.168.1.24:26257/kv?sslmode=disable
+
+790:    cockroach workload run kv --histograms kv-histograms-2020-09-25T15:45:01Z.out -
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --histograms
+argv[5]: kv-histograms-2020-09-25T15:45:01Z.out
+argv[6]: --concurrency
+argv[7]: 2
+argv[8]: --display-every=60s
+argv[9]: --read-percent
+argv[10]: 80
+argv[11]: --tolerate-errors
+argv[12]: postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+
+797:    cockroach workload run kv --histograms kv-histograms-2020-09-25T15:45:22Z.out -
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --histograms
+argv[5]: kv-histograms-2020-09-25T15:45:22Z.out
+argv[6]: --concurrency
+argv[7]: 2
+argv[8]: --display-every=60s
+argv[9]: --read-percent
+argv[10]: 80
+argv[11]: --tolerate-errors
+argv[12]: postgresql://root@192.168.1.121:26257/kv?sslmode=disable
+root@loadgen0:~# kill 804 810 783 790 797
+root@loadgen0:~# 
+----
+
+All the data that I'm saving will go into this repo, data/2020-10-05-long-workload.  I've saved the complete cluster settings into "cluster_settings.txt".  I've copied the load generator client-side output files there as well.
+
+That did it -- throughput is now zero.
+
+The workload covers the range 2020-09-26T01:00Z (which is after the futzing I had done with the cluster that day) through 2020-10-05T15:00 (which is before I shut down the workload).  This covers 9d14h (240 hours).
+
+I collected:
+
+* screenshots from CockroachDB's AdminUI
+* the raw client data from the load generator
+* cluster settings from the database itself
+
+I've created a new Grafana dashboard for this workload to work around the change in metric labeling that otherwise makes it impossible to show the full workload duration in a single graph.  I also tweaked it a bit (e.g., de-selected db6, which wasn't being used during this workload) to better show the data.  I've got screenshots of this for the whole duration.
+
+I've shut down the CockroachDB, load generator, and monitoring nodes because I believe we don't need these any more.  I'm not going to undeploy them yet just in case there's useful data there.
