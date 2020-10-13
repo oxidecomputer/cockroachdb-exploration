@@ -5,15 +5,27 @@
 
 = CockroachDB testing summary
 
-The Oxide system's control plane requires a low-touch, highly-available, horizontally-scalable, strongly-consistent data store (see <<rfd48>>) for storing a variety of data including user configuration, hardware inventory, and runtime state.  The specific requirements are discussed in <<rfd53>>.  A number of modern database systems (generally grouped under the term "NewSQL") seek to meet these requirements.  This document describes our initial experiences with CockroachDB.
+The Oxide system's control plane requires a low-touch, highly-available, horizontally-scalable, strongly-consistent data store (see <<rfd48>>) for storing a variety of data including user configuration, hardware inventory, and runtime state.  The specific requirements around scale, performance, and functional and non-functional requirements are discussed in <<rfd53>>.  A number of modern database systems (generally grouped under the term "NewSQL") seek to meet these requirements.  This document describes our initial experiences with CockroachDB.
 
 == TODO in this document
 
-** more detailed summary of key results
-*** configurations tested
-*** tests run
+* finish adding links, starting at <<_areas_of_technical_risk>>.
+* add an intro section explaining how this document is organized
+* some editing of the "More details on testing" section
+** essentially, organize this better thematically rather than chronologically?
+** "why cockroachdb" might be better as its own top-level section
+** CockroachDB fundamentals should probably be its own top level section
+** The rest of this probably belongs as an appendix rather than ahead of the detailed results
+** Maybe the timeline should be an appendix too
+** Add a section "More on client behavior" to talk about application-level retry and doing this automatically in clients?
+* more detailed summary of key results
+** configurations tested
+** version of CockroachDB
+** cluster sizes
+** workload sizes
+** no tuning done, including CockroachDB caches
+** tests run
 * double-check logs to verify no crashes
-* add links for everything that I can -- there ought to be quite a lot
 
 == Goals
 
@@ -26,22 +38,22 @@ We also spent very little time on absolute performance numbers, as our specific 
 
 == Summary of results
 
-We started as described in <<rfd53>> by surveying popular technologies, primarily CockroachDB, Yugabyte, and TiKV/TiDB.  Based on documentation and user experience reports, we chose CockroachDB as the most promising candidate for more serious testing.  We tested basic operation, online expansion and contraction, and several fault scenarios.
+We started as described in <<rfd53>> by surveying popular technologies, primarily CockroachDB, Yugabyte, and TiKV/TiDB.  See <<NewSQL-notes>> for raw notes from this initial survey.  Based on documentation and user experience reports, we chose CockroachDB as the most promising candidate for more serious testing.  We tested basic operation, online expansion and contraction, and several fault scenarios.
 
 Through all of our testing, we found a number of promising things about CockroachDB.  Some of these might seem like low bars (e.g., no data loss), but they're nevetheless critical and so worth mentioning:
 
 * We did not observe any data loss.
 * We did not observe inconsistency (in the CAP sense), though we were not testing for this directly.
-* We did not observe any unexpected crashes.  There's one category of issue that we expect can be easily managed where CockroachDB crashes by design (loss of clock synchronization).
+* We did not observe any unexpected crashes.  There's one category of issue where CockroachDB crashes by design (loss of clock synchronization) that we expect can be managed.
 * CockroachDB never required operator intervention to re-establish availability after failures.  Nodes quickly and reliably rejoined the cluster and began serving traffic.
-* Despite various failures both transient and extended, the cluster always converged to a state of sufficient replication (at least in terms of its own metrics) without operator intervention.
+* Despite various failures both transient and extended, the cluster always converged to a state of sufficient replication (as measured by its own metrics) without operator intervention.
 * The documentation has generally been good: it adequately describes the system's setup and operation.  We did have some questions (described below) not answered by the docs.
-* Tooling has generally been pretty good.  There are built-in tools for managing the cluster (e.g., decommissioning nodes), running a variety of workloads, etc.  The built-in web Admin UI gives good overall situational awareness.
+* Tooling has generally been good.  There are built-in tools for managing the cluster (e.g., decommissioning nodes), running a variety of workloads, etc.  The built-in web Admin UI gives good overall situational awareness.
 * The system provides good coverage of metrics about its operation, plus other observability tools (e.g., query analysis, various reports about problem nodes or ranges, etc.).  Many of these are fairly unpolished (e.g., the report about hot ranges is just a JSON endpoint).
 
 There are some disappointing signs too:
 
-* In a lot of cases, both expansion and contraction of the cluster resulted in brief periods (2-3 minutes) where almost no requests completed at all and longer periods (20-30 minutes where average and p95 latency were significantly increased (2x-3x).  Some of these tests were on systems potentially underpowered in terms of IOPS, and things were better on systems with more IOPS, but it still wasn't great.
+* In a lot of cases, both expansion and contraction of the cluster resulted in brief periods (2-3 minutes) where almost no requests completed at all and longer periods (20-30 minutes) where average and p95 latency were significantly increased (2x-3x).  Some of these tests were on systems potentially underpowered in terms of IOPS, and things were better on systems with more IOPS, but it still wasn't great.
 * There can be considerable variance in performance (10% to 100%) depending on which node receives a particular query.  This is particularly true for workloads with a working set in memory.  Since the cluster automatically splits ranges, merges ranges, and moves leaseholders around, performance can be inconsistent over time even for a uniform workload.  This is probably good overall, but capacity planning and SLO management could be more difficult as a result.
 * In the few cases we wanted them, there didn't seem to be a lot of operational controls.  For example, we observed one node being particularly hot.  It did not seem that there was a way to tell CockroachDB to move some of its leases to other nodes.  (CockroachDB does try to be completely hands-off, and a fair objection to such a control is that if the system is managing leases, it may well decide to move those leases back.  You don't really _want_ to have to manually configure these things.)
 * The primary risk identified from user experience reports is that the built-in (non-Enterprise) backup/restore option is not suitable for many production clusters.  We did not dig into this and it's probably one of the biggest open risks.
@@ -66,14 +78,14 @@ We tested CockroachDB for about 6 weeks in late August to early October, 2020.  
 
 The most useful tests we ran:
 
-* Online expansion: while pointing one load generator at each node in a 3-node cluster, increase the cluster gradually to 6 nodes and observe latency, throughput, and error rate.  We were not looking for improved latency or throughput -- that winds up being complicated by various other factors and we decided that was better for a separate horizontal scalability test -- but just to know that latency and error rate were not significantly impcated.  Unfortunately, in most cases, the cluster did stop serving requests for a few minutes and then performed poorly for the next 20-30 minutes while data was moved around.
+* Online expansion: while pointing one load generator at each node in a 3-node cluster, increase the cluster gradually to 6 nodes and observe latency, throughput, and error rate.  We were not looking for improved latency or throughput -- that winds up being complicated by various other factors and we decided that was better for a separate horizontal scalability test -- but just to know that latency and error rate were not significantly impacted.  Unfortunately, in most cases, the cluster did stop serving requests for a few minutes and then performed poorly for the next 20-30 minutes while data was moved around.
 * Online contraction: similar to online expansion, with similar results.  In this case, we started with one load generator for the first three nodes in a 6-node cluster.  Then we gradually decommissioned nodes and observed the latency, throughput, and error rate.  The results were similar to expansion.
 * Long-running workload: we ran one workload for 240 hours (over 9 days) to look for any major degradation.  Overall, this went well, though there were occasional brief spikes in latency and comparable degradation in throughput.
 * Fault testing:
 ** `kill -9` instances of CockroachDB.  This had virtually no affect on the cluster.  The killed node was serving requests again in single-digit seconds.  Only in-flight requests seemed to be affected.
 ** Reboot the OS on the system hosting one node.  This had virtually no affect on the cluster.  This node was back up and serving requests within 90 seconds, nearly all of that being OS reboot time.  Only in-flight requests seemed to be affected.
-** Initiate an OS panic on the system hosting one node.  (This is similar to a reboot, but appears more like a network partition, since TCP connections are not gracefully torn down.)  This looked nearly the same as an OS reboot except that it took a little longer for the OS to come back up.
-** Transient partition: use firewall rules to introduce a partition around a cluster node for less than the default 5-minute timeout.  There were some oddities around the client-side reporting (see open questions below), but the overall impact was good.  There were no errors and while latency rose, it was less than ambient flunctuations for the previous 30 minutes.  Queries per second dropped across the clsuter and throughput on all nodes went down.  All nodes' CPU usage and disk throughput when down, probably because one load generator was off and not because one node was down.
+** Initiate an OS panic on the system hosting one node.  (This is similar to a reboot, but behaves more like a network partition, since TCP connections are not gracefully torn down.)  This looked nearly the same as an OS reboot except that it took a little longer for the OS to come back up.
+** Transient partition: use firewall rules to introduce a partition around a cluster node for less than the default 5-minute timeout for declaring a node "dead".  There were some oddities around the client-side reporting (see open questions below), but the overall impact was good.  There were no errors, and while latency rose, it was less than ambient flunctuations for the previous 30 minutes.  Queries per second dropped across the cluster and throughput on all nodes went down.  All nodes' CPU usage and disk throughput when down, probably because one load generator was off and not because one node was down.
 ** Long partition: use firewall rules to introduce a partition around a cluster node for longer than the default 5-minute timeout.  We saw similar oddities around client-side latency, but the overall impact was good.  There were some multi-second latency outliers on a bunch of nodes but they were mostly beyond p99.
 
 For more details, see below.
@@ -91,13 +103,13 @@ Most of the NewSQL family of databases have similar properties:
 
 For us, the most appealing, differentiated things about of CockroachDB are:
 
-* Strong focus on hands-off operation.  Initial setup is a good example of this.  There's only one component to deploy, and you just need to point it at enough other instances to find the cluster.  By contrast, with TiDB, there are several components to deploy, which means independently monitoring their availability and utilization and independently scaling them out.
-* Very strong <<CockroachDB-Jepsen-Report>>.  The Jepsen report for CockroachDB was glowing.  The reports for Yugabyte and TiDB showed some serious issues, including several operational issues.  Further, Yugabyte's public blog post claimed (and as of September 2020 still claims) to have passed Jepsen, a claim so misleading that the Jepsen report added a note at the top saying that's not true.
-* Range-sharded, meaning that keys are sorted rather than hashed.  This is critical for enabling pagination in large collections.  By contrast, Yugabyte is primarily hash-sharded.  (Yugabyte supports range sharding but currently lacks active rebalancing for them.  It seems decidedly not the primary use case.)
+* https://www.cockroachlabs.com/docs/v20.1/architecture/overview.html#goals-of-cockroachdb[Strong focus on hands-off operation].  Initial setup is a good example of this.  There's only one component to deploy, and you just need to point it at enough other instances to find the cluster.  By contrast, with TiDB, there are several components to deploy, which means independently monitoring their availability and utilization and independently scaling them out.  The https://docs.pingcap.com/tidb/dev/production-deployment-using-tiup[documented options] for TiDB deployment include Kubernetes, Ansible, and https://docs.pingcap.com/tidb/stable/tiup-overview[TiUP], the last of which appears to be a full-fledged package manager _and_ cluster management tool.
+* Very strong <<CockroachDB-Jepsen-Report>>.  The Jepsen report for CockroachDB was glowing.  The reports for https://jepsen.io/analyses/yugabyte-db-1.3.1[Yugabyte] and https://jepsen.io/analyses/tidb-2.1.7[TiDB] showed some serious issues, including several operational issues, though it's important to remember that these reports are about a year old and the serious issues have likely been addressed.  Relatedly, Yugabyte's public blog post claimed (and as of September 2020 still claims) to have passed Jepsen, a claim so misleading that the Jepsen report added a note at the top saying that's not true.
+* Range-sharded, meaning that keys are sorted rather than hashed.  This is critical for enabling pagination in large collections.  https://www.cockroachlabs.com/blog/unpacking-competitive-benchmarks/[CockroachDB discusses this and other issues in a blog post] (obviously very biased by the source, but the technical details appear accurate).  By contrast, Yugabyte is primarily hash-sharded.  (Yugabyte supports range sharding but our notes show that as of May it appeared to lack active rebalancing for them.  This functionality https://docs.yugabyte.com/latest/architecture/docdb-sharding/tablet-splitting/#automatic-tablet-splitting-beta[appears to be supported in beta] now.)
 
-Yugabyte is completely open-source (as opposed to CockroachDB, which is under the Business Source License).  It also directly uses the PostgreSQL query execution engine, so it supports more PostgreSQL functionality out-of-the-box.
+Yugabyte is completely open-source (as opposed to CockroachDB, which is under the Business Source License).  It also https://blog.yugabyte.com/why-we-built-yugabytedb-by-reusing-the-postgresql-query-layer/[directly uses the PostgreSQL query execution engine, so it supports more PostgreSQL functionality out-of-the-box].
 
-TiDB is also open-source and the company, PingCap, has posted a lot about their use of Rust (although only parts of TiDB are in Rust).  TiDB emphasizes MySQL compatibility rather than PostgreSQL.
+TiDB is also open-source and the company, PingCap, has https://pingcap.com/blog/tag/Rust[written a lot about their use of Rust] (although only parts of TiDB are in Rust).  https://docs.pingcap.com/tidb/stable/mysql-compatibility[TiDB emphasizes MySQL compatibility] rather than PostgreSQL.
 
 === Learning about CockroachDB
 
@@ -105,17 +117,19 @@ As mentioned above, we spent several weeks learning enough about CockroachDB to 
 
 ==== Basic architecture
 
-CockroachDB exposes a SQL interface using the PostgreSQL wire protocol.
+CockroachDB exposes a SQL interface using the PostgreSQL wire protocol and consumers https://www.cockroachlabs.com/docs/stable/install-client-drivers.html[typically use a regular PostgreSQL client].  CockroachDB (the company) provides https://www.cockroachlabs.com/docs/v20.1/third-party-database-tools["beta" level support for rust-postgres] and the team appears to have https://github.com/sfackler/rust-postgres/issues/171#issuecomment-218832633[contributed improvements to that crate].
 
-Internally, all data is kept in a key-value store.  The entire key space is sorted and divided into **Ranges**, primarily based on size (512 MiB by default).  Each Range has some number of **Replicas** corresponding to the configured **replication factor**.  Ranges are split based on size and load.  They can also be merged based on size.
+Internally, https://www.cockroachlabs.com/docs/stable/architecture/distribution-layer.html#overview[all data is kept in a key-value store].  The entire key space is sorted and divided into **Ranges**, primarily based on size (512 MiB by default).  Each Range has some number of **Replicas** corresponding to the configured **replication factor**.  Ranges are split based on size and https://www.cockroachlabs.com/docs/v20.1/load-based-splitting.html[load].  They can also be https://www.cockroachlabs.com/docs/v20.1/range-merges.html[merged based on size].
 
 There's a separate instance of the Raft consensus algorithm for each Range, based on the nodes that hold Replicas for that Range.  Writes are directed to the Raft leader for the Range and write reqeusts always run through Raft consensus algorithm to ensure strong consistency.
 
 Reads do _not_ go through Raft: instead, there's a **leaseholder** for the Range.  This is one of the nodes with a Replica for this Range, and it's almost always the same node as the Raft leader.  All reads for a Range are directed to the leaseholder, which can generally serve the request from its own copy.  In cases where strong consistency might be violated, reads are sometimes delayed.
 
+For more, see https://www.cockroachlabs.com/docs/v20.1/architecture/reads-and-writes-overview.html[Reads and Writes in CockroachDB].
+
 ==== How requests are distributed to nodes
 
-Quite simply: the expectation is that clients load-balance requests across nodes in the cluster or the cluster is deployed behind a load balancer like haproxy or EBS.  Absent one of these, requests are served by whatever node the client sends the request to.  This complicates fault testing because if the cluster is behind a load balancer, it would be easy to end up testing the behavior of the load balancer and not the cluster itself.
+Quite simply: the expectation is that clients load-balance requests across nodes in the cluster or the cluster is deployed behind a load balancer like haproxy or EBS.  Absent one of these, requests are served by whatever node the client sends the request to.  See https://www.cockroachlabs.com/docs/v20.1/architecture/life-of-a-distributed-transaction.html#overview["Life of a Distributed Transaction"].  This complicates fault testing because if the cluster is behind a load balancer, it would be easy to end up testing the behavior of the load balancer and not the cluster itself.
 
 The node that receives the request is called the **gateway node**.  The request is turned into key-value operations that are distributed to the Raft leader or leaseholder for the Range associated with each key.
 
@@ -130,7 +144,7 @@ Transient failures of individual nodes do not significantly affect reads or writ
 * For any Range where the failed node is not the leaseholder, reads would be unaffected, since only the leaseholder is used for reads.
 * For a Range where the failed node is the Raft leader or leaseholder, write or read requests would be unavailable (respectively).  However, no data needs to be moved for the leader or leaseholder to be moved to one of the other Replicas.  (Again, we're talking about transient failures.)
 
-CockroachDB declares a node dead if it hasn't heartbeated to the cluster for 5 minutes.  When that happens, the Ranges that had Replicas on that node will become _under-replicated_.  The cluster picks new nodes to host replacement Replicas, and data is copied from the nodes that are still available.  This can have a notable performance impact while data is flying around.
+CockroachDB declares a node dead if it https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting.html#node-liveness-issues[hasn't heartbeated to the cluster] for https://www.cockroachlabs.com/docs/v20.1/demo-fault-tolerance-and-recovery.html#step-5-simulate-a-single-node-failure[5 minutes].  When that happens, the Ranges that had Replicas on that node will become _under-replicated_.  The cluster picks new nodes to host replacement Replicas, and data is copied from the nodes that are still available.  This can have a notable performance impact while data is flying around.
 
 
 ==== Surviving multiple failures
@@ -144,10 +158,11 @@ It's important to remember that the replication factor determines how many failu
 
 CockroachDB automatically does a few things that have potentially significant impact on performance:
 
-* splits ranges based on size
-* splits ranges based on load
-* merges ranges based on size
-* moves leases to other replicas
+* https://www.cockroachlabs.com/docs/v20.1/frequently-asked-questions.html#how-does-cockroachdb-scale[splits ranges based on size]
+* https://www.cockroachlabs.com/docs/v20.1/load-based-splitting.html[splits ranges based on load]
+* https://www.cockroachlabs.com/docs/v20.1/range-merges.html[merges ranges based on size]
+* https://www.cockroachlabs.com/docs/v20.1/architecture/replication-layer#load-based-replica-rebalancing[moves replicas based on load]
+* (unverified) moves leases to other replicas
 * (unverified) moves replicas based on available capacity
 
 These can dramatically impact performance.  In particular, load-based splitting can split a busy Range into two less-busy Ranges.  If a different node becomes the new Range's leaseholder, then the original busy load can be successfully split across two nodes.
@@ -159,9 +174,9 @@ As mentioned above, overall request latency can be much lower when a client happ
 
 This material is unrelated to CockroachDB, but worth mentioning and potentially useful to readers.  As part of this, we also learned a bunch about AWS, largely related to I/O performance.
 
-The typical baseline EBS volume is "gp2" class, a general-purpose SSD-based network volume.  We initially used these volumes for testing because it's fairly cheap and we weren't intending to measure absolute performance.  gp2 volumes provide a certain number of IOPS depending mostly on the volume's size; what's tricky, though, is that they also support bursting way above their baseline performance, and worse (for our use case): they start with a significant "credit" ostensibly to speed up boot time, which might use more I/O than steady-state.  They can run significantly faster for the first several _hours_ than they will after that.  It took some time for us track this down as the cause of suddenly-dropping database performance.
+The typical baseline EBS volume is "gp2" class, a general-purpose SSD-based network volume.  We initially used these volumes for testing because it's fairly cheap and we weren't intending to measure absolute performance.  https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html#EBSVolumeTypes_gp2[gp2 volumes provide a certain number of IOPS depending mostly on the volume's size]; what's tricky, though, is that they also support bursting way above their baseline performance, and worse (for our use case): they start with a significant "credit" ostensibly to speed up boot time, which might use more I/O than steady-state.  They can run significantly faster for the first several _hours_ than they will after that.  It took some time for us track this down as the cause of suddenly-dropping database performance.
 
-To avoid bursting, we switched to more expensive "io1" class volumes, which provide more consistent performance at whatever level you specify.  We also did some testing using EC2 instance types with directly-attached NVME storage ("i3" instance types).  Those are nominally cheaper, but all data is lost when the instance is shut down, so it needs to remain running 24/7 as long as the cluster might ever remain in use, so it winds up being more expensive for this sort of testing.
+To avoid bursting, we switched to more expensive https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html#EBSVolumeTypes_piops["io1" class volumes], which provide more consistent performance at whatever level you specify.  We also did some testing using EC2 instance types with directly-attached NVME storage ("i3" instance types).  Those are nominally cheaper, but all data is lost when the instance is shut down, so it needs to remain running 24/7 as long as the cluster might ever remain in use, so it winds up being more expensive for this sort of testing.
 
 
 == Caveats and limitations on these results
@@ -172,9 +187,9 @@ We wound up doing a lot of _ad hoc_ testing (sometimes in response to unexpected
 
 We did not end up directly verifying horizontal scalability (that is, in a controlled test).  We saw it in practice during expansion and contraction activities, but we didn't scale up or down the workload to really prove it.
 
-We used a pretty limited number of workloads: primarily the "kv" (key-value) workload that ships with the `cockroach workload` tool.  This was sufficient to exercise reads and writes, with some control over the size of writes and the fraction of read requests.  We also used the same tool to populate our large databases.  Results could be very different for data that looks very different, as might happen with larger payloads, more varying payload size, less well-distributed keys, use of secondary indexes, etc.
+We used a pretty limited number of workloads: primarily the "kv" (key-value) workload that ships with the https://www.cockroachlabs.com/docs/stable/cockroach-workload.html[`cockroach workload`] tool.  This was sufficient to exercise reads and writes, with some control over the size of writes and the fraction of read requests.  We also used the same tool to populate our large databases.  Results could be very different for data that looks very different, as might happen with larger payloads, more varying payload size, less well-distributed keys, use of secondary indexes, etc.
 
-We only ran tests on AWS, using fairly small instance types, on illumos, using one version of CockroachDB.  This was a beta version using their new PebbleDB, a custom reimplementation of RocksDB.  PebbleDB is the default in the next official version, which is why we wanted to test that.
+We only ran tests on AWS, using fairly small instance types, on illumos, using one version of CockroachDB.  This was a beta version using their new https://www.cockroachlabs.com/blog/pebble-rocksdb-kv-store/[PebbleDB], a custom reimplementation of RocksDB.  PebbleDB is the default in the next official version, which is why we wanted to test that.
 
 We did not do any significant performance work like tuning the filesystem or networking stack or CockroachDB itself.  It's possible we could see improvements in absolute performance from that work.
 
@@ -220,7 +235,7 @@ These correspond with areas that we didn't test, described above.  Here we expla
 | Moderate
 | This is supposed to work, but may be operationally complex.  On the other hand, we don't have reason to believe other systems are substantially better here.  Sadly, many systems wind up taking planned downtime for upgrades.
 
-| Horizontal scalability.  
+| Horizontal scalability
 | Low
 | Moderate
 | Horizontal scalability is a very fundamental part of the system here and everything we know about the design suggests that it will work.  Our non-controlled tests show it in action.
