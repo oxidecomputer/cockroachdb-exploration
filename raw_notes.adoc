@@ -8515,9 +8515,9 @@ _elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(
 29518.3s      783          124.3          124.6      5.5      9.4     16.3     79.7 write
 ----
 
-It never reported any errors during that interval, and the max latency it reported was 10s.  That seems wrong.  (Added it to the README list of questions.)
+It never reported any errors during that interval, and the max latency it reported was 103s.  That seems wrong.  (Added it to the README list of questions.)
 
-That said, the overall impact here was pretty impressive.  CockroachDB reported no errors and (for whatever reason?) p95/p99 only rose a little bit -- less than ambient fluctuation for 30 minutes prior to the test.  It did have an affect -- queries per second dropped from about 2200 to about 1900 (across the cluster) during the partition.  Throughput on all nodes went down.  .252 plummeted to 0, of course.  QPS by store showed that store 11 did no queries for a little while.  Everybody's CPU usage and disk throughput went down a bit (probably because one load generator was off, not because one node was down).  p99 heartbeat latency shot up to 10s as well for that node.  I'd call this pretty successful, but the 10s peak is worth digging into.
+That said, the overall impact here was pretty impressive.  CockroachDB reported no errors and (for whatever reason?) p95/p99 only rose a little bit -- less than ambient fluctuation for 30 minutes prior to the test.  It did have an effect -- queries per second dropped from about 2200 to about 1900 (across the cluster) during the partition.  Throughput on all nodes went down.  .252 plummeted to 0, of course.  QPS by store showed that store 11 did no queries for a little while.  Everybody's CPU usage and disk throughput went down a bit (probably because one load generator was off, not because one node was down).  p99 heartbeat latency shot up to 10s as well for that node.  I'd call this pretty successful, but the 103s peak is worth digging into.
 
 Next, I'm going to try partitioning for a longer time.
 

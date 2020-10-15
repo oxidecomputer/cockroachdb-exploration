@@ -12,6 +12,7 @@ We've tried to organize this document to be most efficient for readers.  It's mo
 == TODO in this document
 
 * more detailed summary of key results (see below)
+* what to say about the issues from 9/23?
 * double-check logs to verify no crashes
 * spell check
 
@@ -297,7 +298,7 @@ We avoided the latest generation of instance types ("c5" and "m5") because they 
 
 **Volume types (IOPS):** We started with general purpose "gp2" devices, but found these <<_other_lessons_learned,unsuitable due to the bursting behavior>>.  We switched to "io1" (provisioned IOPS) class devices, initially with 500 IOPS and then with 1000 IOPS.  We also did some testing with local NVME devices (the i3.large instances), which we expect to provide considerably more than 1000 IOPS.
 
-**Data collection:** We made a custom Grafana dashboard showing key metrics, including throughput and latency, plus the balance of the workload across nodes and utilization, saturation, and errors of various parts of the system.  This data came from CockroachDB itself, the Prometheus https://github.com/prometheus/node_exporter[node_exporter], and a custom https://github.com/oxidecomputer/illumos-exporter[illumos-exporter].  These all represent server-side metrics.
+**Data collection:** We made a custom Grafana dashboard showing key metrics, including throughput and latency, plus the balance of the workload across nodes and utilization, saturation, and errors of various parts of the system.  This data came from CockroachDB itself, the Prometheus https://github.com/prometheus/node_exporter[node_exporter], and a custom https://github.com/oxidecomputer/illumos-exporter[illumos-exporter].  These all represent server-side metrics.  Most rates in these graphs are averaged over a 30-second window.
 
 The `cockroach workload run` command emits client-side metrics showing cumulative errors and both per-second and cumulative operation throughput and latency (as p50, p95, p99, and pMax).  We generally configured it to record per-second latency histograms but we didn't examine these outputs.
 
@@ -373,13 +374,14 @@ On 2020-09-21 I did some experiments using a basic sysbench `oltp_insert` run to
 
 I did a similar experiment using `oltp_point_select` to look at reads.  This was confounded a bit by CockroachDB doing a range merge partway through, but we have some clear data points.  Throughput was over 2x better for the leaseholder than for the other nodes, whether they had replicas or not.  The average read latency was about 0.87ms when the gateway node was the leaseholder and 1.7ms otherwise, which is reasonably close to the official CockroachDB-reported average latency for this workload of 0.7ms.  (See link above.)
 
-=== XXX issues from 9/23
-
-=== XXX go through raw notes from 9/23 onward
-
 === Online expansion, small database
 
-2020-09-22
+2020-09-24
+XXX revisit this.  The screenshots I have aren't from a consistent point in time.  I'm not sure I recorded how much data there was in this database at this point (but it should be evident from the metrics).
+
+* Take new screenshots
+* Document database size, etc.
+* Annotate screenshots with relevant times
 
 XXX XXX TODO more details here
 Volume types
@@ -390,7 +392,9 @@ Date
 
 === Online contraction, small database
 
-2020-09-22
+2020-09-24
+
+See "Online expansion, small database"
 
 XXX XXX TODO more details here
 Volume types
@@ -433,61 +437,305 @@ Workload
 Date
 
 
-=== Fault: `kill -9`
+=== Fault testing
 
-2020-09-25
+The fault testing was done on 2020-09-25 with a 5-node cluster with one "kv" workload runner pointed at each node in the cluster.  These were run as:
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 2 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+----
 
+Note that these are 1-byte writes (and likely 1-byte reads, though we might have also read some records written by previous tests using a few KiB values).
 
-=== Fault: OS reboot (graceful)
+We ran the workload for four hours to see steady behavior before starting fault testing.  Before injecting faults, we see 0 errors, CPU utilization varying but largely under 80%, and disk utilization around 35%.
 
-2020-09-25
+We ran several tests:
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+* Send SIGKILL (`kill -9`) to a CockroachDB process
+* OS reboot
+* OS panic
+* Brief single-node network partition
+* Extended single-node network partition
 
+The impact on throughput and latency for all of these tests is shown here:
 
-=== Fault: OS panic (ungraceful reboot)
+image::fault-testing-overview.png[Overview of impact on fault testing]
 
-2020-09-25
+Note that these graphs do not show client-side latency or errors.  See the text below for details on that.
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+==== SIGKILL
 
+SIGKILL immediately terminates a process, which causes the kernel to close open TCP connections.  This is a reasonable way to simulate a software crash of CockroachDB itself (and not any layers beneath it).  The program is running under SMF, so it gets restarted automatically when killed.
 
-=== Fault: transient single-node partition
+SIGKILL had very little impact on the cluster.  Each of the four times that we sent SIGKILL, there were several errors and a brief reduction in throughput, but no real impact on latency.
 
-2020-09-25
+The load generator that was pointed at the node that was killed immediately reported 35 errors.  This is the `cockroach workload` output from that client around the failure:
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+...
+14999.2s        0          436.5          465.8      2.6      5.8     10.0    113.2 read
+14999.2s        0          110.1          116.6      5.8     11.0     19.9    159.4 write
+E200925 19:55:45.182200 1 workload/cli/run.go:445  EOF
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+15059.1s       35          434.5          465.6      2.6      5.2      8.9   1811.9 read
+15059.1s       35          108.2          116.5      5.8     10.5     16.8   1744.8 write
+----
 
+The EOF message makes sense for the failure mode.
 
-=== Fault: persistent single-node partition
+Three of the four load generators aimed at _different_ nodes (that is, not the one that was killed) reported errors that looked like this:
 
-2020-09-25
+[source,text]
+----
+E200925 20:02:20.514932 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n7: breaker open [exhausted]) (SQLSTATE 40003)
+...
+15719.1s        1          472.9          482.1      2.5      5.0      8.9     67.1 read
+15719.1s        1          118.7          120.6      5.5     10.0     16.3     92.3 write
+E200925 20:08:15.107262 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n7: breaker open [exhausted]) (SQLSTATE 40003)
+15779.1s        3          461.9          482.1      2.5      5.0      8.1    184.5 read
+15779.1s        3          114.3          120.5      5.5     10.0     16.3   2818.6 write
+----
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+While a strange way to phrase the error (owing to Golang's choice), this appears to reflect a failure on the backend to contact the node that we killed.
 
+In this case, no rebalancing was needed nor done by CockroachDB.
 
+==== OS reboot
+
+We used `uadmin 2 1` to induce an OS reboot at 20:44Z.  This is a graceful reboot in that filesystems are sync'd and TCP connections closed, but this does not wait long for processes to exit.
+
+Here's the same graph of overall performance during all the fault testing:
+
+image::fault-testing-overview.png[Overview of impact on fault testing]
+
+This went well.  We do see a notable (brief) dip in throughput.  Queries served by the rebooted node dropped to zero, as we'd expect.  Clients reported the same kinds of errors as with the SIGKILL case: the client whose node was rebooted reported a bunch of EOF errors, while other clients saw a much smaller number of "breaker open" errors from within CockroachDB.  p95 rose from 6ms to 8ms and p99 rose from 8ms to 14ms, with a corresponding drop in throughput on all nodes.  This lasted 90 seconds from when the reboot was issued, 65 seconds of which were outside CockroachDB's control.  (That's the duration from when the reboot was issued until CockroachDB was started again, after the reboot.)  Keep in mind too that the graphs measure rates over 30 seconds, so the impact period while CockroachDB was running may have been considerably less than 25 seconds.
+
+In this case, no rebalancing was needed nor done by CockroachDB.
+
+==== OS panic
+
+An OS panic causes the system to essentially stop running while the kernel writes a crash dump to disk, then the system reboots.  This looks similar to the OS reboot case except for the key difference that TCP connections are not closed.  Other hosts would see this as a partition until the OS came back up, at which point they would see explicit failures of these TCP connections when those other hosts next send any packets over them (which they generally must do occasionally to detect cases like this).
+
+Here's the same graph of overall performance during all the fault testing:
+
+image::fault-testing-overview.png[Overview of impact on fault testing]
+
+This went well.  The period of impact is longer, presumably because of the crash dump.  It was about 1m49s from inducing the panic until CockroachDB was running.  Based on the latency and throughput graphs, performance was affected for another 1m11s.  Latency and throughput were affected similarly to the reboot: slightly elevated latency, slightly reduced throughput.
+
+The client connected to the host that panicked reported:
+
+[source,text]
+----
+18359.0s      262          381.2          508.4      2.4      4.7      8.1     56.6 read
+18359.0s      262           94.2          127.1      5.5      9.4     14.2    109.1 write
+E200925 20:52:09.494424 1 workload/cli/run.go:445  read tcp 192.168.1.219:55958->192.168.1.252:26257: read: connection reset by peer
+18419.0s      398            0.0          506.7      0.0      0.0      0.0      0.0 read
+18419.0s      398            0.5          126.7      0.5      0.9  51539.6  51539.6 write
+E200925 20:53:09.901031 1 workload/cli/run.go:445  dial tcp 192.168.1.252:26257: connect: connection refused
+18479.0s      783          156.2          505.6      2.6      5.5     10.5   2281.7 read
+18479.0s      783           39.3          126.4      5.8     10.5     16.3   1342.2 write
+18539.0s      783          485.5          505.5      2.4      5.2     10.0     75.5 read
+18539.0s      783          122.0          126.4      5.5     10.5     18.9     88.1 write
+18599.0s      783          501.6          505.5      2.4      4.7      7.9    121.6 read
+18599.0s      783          123.2          126.4      5.5     10.0     17.8    100.7 write
+----
+
+These errors are consistent with an OS panic, although they imply that it was about a full minute between when the OS was up enough to issue an ECONNRESET and when CockroachDB was started.
+
+In this case, no rebalancing was needed nor done by CockroachDB.
+
+==== Transient single-node partition
+
+We used firewall rules to simulate a network partition by blocking all traffic in and out on CockroachDB's port (26257), which is used for both SQL clients and intra-cluster traffic.
+
+We induced a partition around one node from 23:51Z that lasted until 23:55Z, less than the 5-minute time after which CockroachDB would declare the node dead and rebalance data.  Admin UI immediately reports the correct node as "suspect" (which is the correct state here).
+
+Several clients not pointed at the partitioned node report errors like this:
+
+[source,text]
+----
+29158.4s      103          454.5          460.2      2.6      5.2      8.9     67.1 read
+29158.4s      103          114.4          115.1      5.8     10.5     16.8     48.2 write
+E200925 23:51:09.590144 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [exhausted]) (SQLSTATE 40003)
+29218.4s      104          415.8          460.1      2.6      5.0      8.4   7247.8 read
+29218.4s      104          103.6          115.1      5.8      9.4     15.7   7247.8 write
+29278.4s      104          479.0          460.1      2.6      4.7      7.3     35.7 read
+29278.4s      104          118.3          115.1      5.8      9.4     14.7     48.2 write
+----
+
+with an increase in max latency up to 7.2 seconds (that does not affect p99).
+
+The load generator pointed at the partitioned node reports no more requsts completing.  When the partition is removed, we see some very large max query times (103 seconds), and performance immediately goes back to what it was before:
+
+[source,text]
+----
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+29038.4s      783          501.8          503.0      2.5      4.7      8.4     54.5 read
+29038.4s      783          124.8          125.8      5.5     10.0     15.7     50.3 write
+29098.4s      783          504.1          503.0      2.5      4.7      7.9     54.5 read
+29098.4s      783          127.1          125.8      5.2      9.4     15.2     50.3 write
+29158.4s      783          233.9          502.5      2.5      5.0     10.0     67.1 read
+29158.4s      783           57.9          125.6      5.5     10.5     18.9    113.2 write
+29218.4s      783            0.0          501.5      0.0      0.0      0.0      0.0 read
+29218.4s      783            0.0          125.4      0.0      0.0      0.0      0.0 write
+29278.4s      783            0.0          500.4      0.0      0.0      0.0      0.0 read
+29278.4s      783            0.0          125.1      0.0      0.0      0.0      0.0 write
+...
+29338.4s      783            0.0          499.4      0.0      0.0      0.0      0.0 read
+29338.4s      783            0.0          124.9      0.0      0.0      0.0      0.0 write
+29398.3s      783            0.0          498.4      0.0      0.0      0.0      0.0 read
+29398.3s      783            0.0          124.6      0.0      0.0      0.0      0.0 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+29458.3s      783          406.7          498.2      2.5      4.7      7.6 103079.2 read
+29458.3s      783          104.5          124.6      5.5      9.4     14.7 103079.2 write
+29518.3s      783          499.4          498.2      2.5      4.7      7.9    125.8 read
+29518.3s      783          124.3          124.6      5.5      9.4     16.3     79.7 write
+----
+
+It surprising at first that p99 never rose.  This might be because latency is reported only for completed queries.  When the partition starts, a few queries get stuck, but it may be less than 1% during that 1-minute sampling window.  When the partition finishes, queries are fast, and any that were stuck might represent less than 1 minute in the next window.  Intuitively we'd expect all queries during the window to have elevated latency, but if they weren't completing, they might not be reported -- these might be the 103-second queries we see at the end of the window.  Why only 103 seconds?  That's harder to understand.  This all relies on a lot of "maybe", but we'd probably need more precise client-side metrics to really see what was going on here.
+
+Here's the same graph of overall performance during all the fault testing:
+
+image::fault-testing-overview.png[Overview of impact on fault testing]
+
+As we'd expect, queries per second handled by the partitioned node went to zero for the duration of the partition.  (Note that Prometheus would have been able to scrape all metrics from this node during this period because those are exposed over a different TCP port that we did not firewall.)  All nodes' CPU usage, disk throughput, and query throughput went down a little bit.  This seems likely a result of one load generator being off rather than one node being down.
+
+==== Extended single-node partition
+
+We used the same approach to induce a partition around the same node from 00:03Z until 00:28Z.  This is long enough that CockroachDB should declare the node dead around 00:08Z.  This should cause it to rebalance (create new replicas to replace the ones that were on that node).  At 00:28Z, we'd expect it to do more rebalancing to put replicas onto the newly-recovered node.
+
+As expected, this looks similar to the transient partition for a while, with similar errors reported by the client whose node is partitioned:
+
+[source,text]
+----
+29758.3s      783          124.8          124.6      5.5     10.0     15.7     44.0 write
+29818.3s      783          437.9          498.1      2.4      5.0      9.4    134.2 read
+29818.3s      783          111.8          124.5      5.5     12.6     96.5    352.3 write
+29878.3s      783          276.7          497.6      2.5      5.0      8.4     33.6 read
+29878.3s      783           71.1          124.4      5.5      9.4     14.2     75.5 write
+29938.3s      783            0.0          496.6      0.0      0.0      0.0      0.0 read
+29938.3s      783            0.0          124.2      0.0      0.0      0.0      0.0 write
+29998.3s      783            0.0          495.6      0.0      0.0      0.0      0.0 read
+29998.3s      783            0.0          123.9      0.0      0.0      0.0      0.0 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+30058.3s      783            0.0          494.6      0.0      0.0      0.0      0.0 read
+30058.3s      783            0.0          123.7      0.0      0.0      0.0      0.0 write
+30118.3s      783            0.0          493.7      0.0      0.0      0.0      0.0 read
+30118.3s      783            0.0          123.4      0.0      0.0      0.0      0.0 write
+30178.3s      783            0.0          492.7      0.0      0.0      0.0      0.0 read
+30178.3s      783            0.0          123.2      0.0      0.0      0.0      0.0 write
+E200926 00:08:49.992643 1 workload/cli/run.go:445  read tcp 192.168.1.219:44348->192.168.1.252:26257: read: connection timed out
+30238.3s      787            0.0          491.7 103079.2 103079.2 103079.2 103079.2 read
+30238.3s      787            0.0          122.9 103079.2 103079.2 103079.2 103079.2 write
+30298.3s      787            0.0          490.7      0.0      0.0      0.0      0.0 read
+30298.3s      787            0.0          122.7      0.0      0.0      0.0      0.0 write
+30358.3s      787            0.0          489.7      0.0      0.0      0.0      0.0 read
+30358.3s      787            0.0          122.5      0.0      0.0      0.0      0.0 write
+E200926 00:12:32.150330 1 workload/cli/run.go:445  dial tcp 192.168.1.252:26257: connect: connection timed out
+30418.3s      789            0.0          488.8      0.0      0.0      0.0      0.0 read
+30418.3s      789            0.0          122.2 103079.2 103079.2 103079.2 103079.2 write
+----
+
+As before, other clients report the same error as before and a few multi-second latency outliers, beyond the p99:
+
+[source,text]
+----
+29818.3s      104          115.3          115.1      5.8     10.0     16.3     62.9 write
+29878.3s      104          402.2          460.0      2.6      5.8     10.0    285.2 read
+29878.3s      104           99.2          115.1      5.8     13.1    104.9    402.7 write
+E200926 00:03:13.840994 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=rpc error: code = Unavailable desc = transport is closing [exhausted]) (SQLSTATE 40003)
+29938.3s      105          415.9          459.9      2.6      5.0      7.6   6174.0 read
+29938.3s      105          103.9          115.0      5.8     10.0     15.7   6174.0 write
+29998.3s      105          465.7          459.9      2.6      5.0      7.9     52.4 read
+29998.3s      105          118.8          115.1      5.8      9.4     15.2     48.2 write
+_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)
+30058.3s      105          474.7          459.9      2.6      4.7      7.3     27.3 read
+30058.3s      105          119.4          115.1      5.5      9.4     13.6     28.3 write
+30118.3s      105          465.4          459.9      2.6      5.0      8.9    109.1 read
+30118.3s      105          115.6          115.1      5.8     10.0     17.8     60.8 write
+30178.3s      105          284.7          459.6      2.9     11.5     22.0   2684.4 read
+30178.3s      105           71.3          115.0      6.0     18.9     46.1   2550.1 write
+30238.3s      105          226.6          459.1      4.1     13.1     25.2   1275.1 read
+30238.3s      105           56.2          114.9      8.1     27.3     88.1    570.4 write
+30298.3s      105          409.1          459.0      3.0      6.3     11.5    100.7 read
+30298.3s      105           99.5          114.8      6.0     11.0     16.8     96.5 write
+30358.3s      105          447.3          459.0      2.8      5.2      8.1     50.3 read
+30358.3s      105          111.1          114.8      5.8      9.4     14.2     32.5 write
+----
+
+It's a little surprising that things got better for several minutes and then we saw a few multi-second outliers again.
+
+Other graphs showed a lot of rebalancing activity.  Check out CPU utilization and disk utilization from 00:08 to 00:28:
+
+image::fault-testing-cpu-disk.png[CPU and disk activity during fault testing]
+
+There's also a bit less disk write activity and a lot more reads (presumably reading cold data from disk in order to send it to a node that's going to host a new replica):
+
+image::fault-testing-disk-io.png[Disk I/O during fault testing]
+
+We also see ranges and leaseholders moving around:
+
+image::fault-testing-ranges.png[CockroachDB range activity during fault testing]
+
+At 00:20, we dumped information about the ranges from the "kv" database:
+
+[source,text]
+----
+root@192.168.1.24:26257/defaultdb> select (range_id, lease_holder, replicas) from [show ranges from database kv];
+       ?column?
+----------------------
+  (55,3,"{2,3,7}")
+  (67,3,"{2,3,7}")
+  (85,7,"{2,3,7}")
+  (77,12,"{2,7,12}")
+  (83,2,"{2,3,7}")
+  (84,2,"{2,3,7}")
+  (69,7,"{2,7,12}")
+  (62,7,"{2,3,7}")
+  (79,3,"{2,3,12}")
+  (76,12,"{3,7,12}")
+  (90,12,"{2,3,12}")
+(11 rows)
+----
+
+We partitioned node 11, and CockroachDB has correctly established 3 replicas on nodes _not_ including 11.
+
+After the partition was removed, we see some replicas landed back on node 11:
+
+[source,text]
+----
+root@192.168.1.24:26257/defaultdb> select (range_id, lease_holder, replicas) from [show ranges from database kv];
+       ?column?
+-----------------------
+  (55,2,"{2,3,11}")
+  (67,7,"{7,11,12}")
+  (85,2,"{2,3,7}")
+  (77,12,"{2,11,12}")
+  (83,3,"{2,3,7}")
+  (84,7,"{3,7,11}")
+  (69,12,"{2,7,12}")
+  (62,11,"{2,7,11}")
+  (79,3,"{2,3,12}")
+  (76,3,"{3,11,12}")
+  (90,11,"{2,11,12}")
+(11 rows)
+
+Time: 122.942376ms
+----
+
+Here's the same graph of overall performance during all the fault testing:
+
+image::fault-testing-overview.png[Overview of impact on fault testing]
+
+The overall impact was a bit bigger than we'd like:
+
+* p95 bumped up from about 6ms to about 25ms
+* p99 bumped up from about 10ms to about 90ms
+* There was a particular dip in throughput when the node came back, down to 800 selects (from 1900) and 200 inserts (from 470).  That lasted about 3 minutes.  This is consistent with other testing we did when rebalancing happened.
+* p99 RTT latency rose as high as 1.75s and p99 heartbeat latency hit 10s -- but those 10s data points are all for the partitioned node.  10s seems like some hardcoded max.
 
 == Other lessons learned
 
