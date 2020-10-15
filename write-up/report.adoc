@@ -403,38 +403,74 @@ Workload
 Date
 
 
-=== Online expansion, big database
+=== Online expansion and contraction with a big database
 
-2020-09-30
+On 2020-09-30 we tested online expansion and contraction using a much bigger database (i.e., one that does not fit in DRAM) and using local NVME devices rather than network storage.  To do this, we used the "i3.large" instance type (2 vCPUs, 15.25 GiB memory + 475 GiB NVME SSD).  Although the specific IOPS and I/O throughput are not documented, we expect them to be far more than CockroachDB's suggestion for this VCPU count.
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+We deployed a 3-node cluster and built up the database using one invocation of the following for _each_ node:
 
+[source,text]
+----
+cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.53:26257/kv?sslmode=disable
+----
 
-=== Online contraction, big database
+This creates records of approximately 1 KiB in one giant table.  We stopped when the ZFS filesystem usage reached about 73.7 GiB per node (about 4-5x DRAM).  We checked the count of leaseholders and replicas:
 
-2020-09-30
+For the actual testing, we ran this workload once for each cluster node:
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+[source,text]
+----
+cockroach workload run kv --max-block-bytes 1024 --min-block-bytes 1024 --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 2 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.53:26257/kv?sslmode=disable
+----
 
+For this test, we brought up three more CockroachDB nodes, expanding the cluster from 3 nodes to 6 nodes.  We did this several minutes apart so the effect on performance would be clear.  Then we decommissioned these newly-added nodes, again several minutes apart, to see the impact.  Here's a timeline:
 
-=== Long-running "kv" workload
+[source,text]
+----
+19:31Z Enabled CockroachDB node 4
+21:09Z Enabled CockroachDB node 5
+22:15Z Enabled CockroachDB node 6
+22:26Z Increase load generator concurrency from 2 per node to 4 per node
+22:44Z Reduce load generator concurrency back to 2 per node
+22:58Z Begin decommissioning node 6 (took 11m)
+23:26Z Begin decommissioning node 5 (took 23m)
+23:47Z Begin decommissioning node 4 (took 23m)
+----
 
-XXX XXX TODO more details here
+Here's a summary of the performance impact:
 
-2020-10-05
+image::nvme-scale-overview.png[Overview of expansion and contraction on NVME cluster]
 
-Volume types
-Instance types
-Workload
-Date
+In nearly all cases where we added or removed a node (in this test and others), we see a significant increase in latency (and reduction in throughput) for the first 1-4 minutes, followed by a much longer period (20-30 minutes) of less severe but still considerable increase in latency and reduction in throughput (compared to before the operation).  We generally didn't see any client errors (but see below).
+
+The count of replicas per node shows pretty clearly when each node was added, how long it took to rebalance storage, and when each node was subsequently removed, and how long the subsequent rebalancing took:
+
+image::nvme-scale-replicas.png[Replica metrics during expansion and contraction on NVME cluster]
+
+We also see this in disk space used:
+
+image::nvme-scale-space.png[Disk space used during expansion and contraction on NVME cluster]
+
+We can see that the CPU and disk utilization gets much more variable while rebalancing is going on:
+
+image::nvme-scale-utilization.png[Utilization during expansion and contraction on NVME cluster]
+
+We can also see all the read and write activity that happens during rebalancing:
+
+image::nvme-scale-diskio.png[Disk I/O during expansion and contraction on NVME cluster]
+
+image::nvme-scale-net.png[Network I/O during expansion and contraction on NVME cluster]
+
+Through the whole process, the load generators reported a total of 3 failed queries:
+
+[source,text]
+----
+E200930 23:08:39.587973 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n5: breaker open [exhausted]) (SQLSTATE 40003)
+...
+E201001 00:08:29.690420 1 workload/cli/run.go:445  ERROR: result is ambiguous (error=unable to dial n1: breaker open [exhausted]) (SQLSTATE 40003)
+----
+
+It's not clear what caused these, but the impact was pretty small.
 
 
 === Fault testing
@@ -736,6 +772,25 @@ The overall impact was a bit bigger than we'd like:
 * p99 bumped up from about 10ms to about 90ms
 * There was a particular dip in throughput when the node came back, down to 800 selects (from 1900) and 200 inserts (from 470).  That lasted about 3 minutes.  This is consistent with other testing we did when rebalancing happened.
 * p99 RTT latency rose as high as 1.75s and p99 heartbeat latency hit 10s -- but those 10s data points are all for the partitioned node.  10s seems like some hardcoded max.
+
+=== Long-running "kv" workload
+
+The long-running workload continued on the same cluster and database used for the fault testing above.  This was a 5-node cluster at that point.  We ran this workload once for each cluster node:
+
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+----
+
+This ran from about 2020-09-26T01:00Z to 2020-10-05T15:00Z (9d 14h, or 240 hours).
+
+We were primarily looking for crashes in performance, especially permanent ones, or an overall negative trend in throughput.  There was more variation than we might like, and there are some transient spikes in latency (with associated crashes in throughput), but p99 only reached about 40ms:
+
+image::longrun-overview.png[Long-running workload]
+
+The change in queries per store on 9/29 is interesting, but we did not dig into it.
+
+
 
 == Other lessons learned
 
