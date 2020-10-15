@@ -7,14 +7,20 @@
 
 The Oxide system's control plane requires a low-touch, highly-available, horizontally-scalable, strongly-consistent data store (see <<rfd48>>) for storing a variety of data including user configuration, hardware inventory, and runtime state.  The specific requirements around scale, performance, and functional and non-functional requirements are discussed in <<rfd53>>.  A number of modern database systems (generally grouped under the term "NewSQL") seek to meet these requirements.  This document describes our initial experiences with CockroachDB.
 
-We've tried to organize this document to be most efficient for readers.  It's most important to read through the <<_goals>> and <<_executive_summary_of_results>> sections.  Readers wanting to better understand our decision-making or CockroachDB probably want to read through <<_why_cockroachdb,why we focused on CockroachDB>> and some <<_cockroachdb_basics,basic concepts>> for evaluating CockroachDB and our test results, plus the summary of tests, caveats, and areas of technical risk.  The rest of the document contains lots more detail about the tests, which we don't expect most people to pore through (though that would be welcome).  It might be useful for sanity-checking.
+== This document is long
 
-The primary goals for _this document_ are to figure out:
+**Readers:** The primary goals for _this document_ are to figure out:
 
 1. Are there warning signs from the data contained here that we should really dig into before proceeding with CockroachDB?
 2. Is there more testing we should do _right now_ before proceeding with CockroachDB?
 
-See the next section on <<_goals>> for criteria here.
+For both of these questions, see the next section on <<_goals>> for criteria.
+
+**If you only want to see the top-level conclusions,** read through the <<_goals>> and <<_executive_summary_of_results>> sections.
+
+**If you want to weigh in on the questions above,** you'll probably want to read those sections, plus everything through "Open technical questions".  This will include <<_why_cockroachdb,why we focused on CockroachDB>> and some <<_cockroachdb_basics,basic concepts>> for evaluating CockroachDB and our test results, plus the summary of tests, caveats, and areas of technical risk. **This is still only about 1/4 of the doc.**  It's probably worth your time to review the <<_online-expansion-and-contraction-with-a-big-database>> test, too -- there are some nice graphs!
+
+The rest of the document contains lots more detail about the tests run for those wanting to pore through it.  Nobody's expected to do that, but feedback is always welcome.
 
 == Goals
 
