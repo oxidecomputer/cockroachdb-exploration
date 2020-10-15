@@ -1,6 +1,6 @@
 // Include a Table of Contents on the left hand side.
 :toc: left
-// ":icons: font" is needed for adminition and callout icons.
+// ":icons: font" is needed for admonition and callout icons.
 :icons: font
 
 = Raw notes
