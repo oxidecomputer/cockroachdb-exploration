@@ -750,7 +750,7 @@ E200908 23:15:23.487617 1 workload/cli/run.go:445  pq: result is ambiguous (erro
 Maybe I'm running too close to saturation?  Until this point, p95 latency was very steady around 18ms across all three nodes.  p99 was very steady at around 30ms across all three nodes.  Now the thing is falling apart.  I wonder if this would work better with three different load generator instances (processes, not VMs) instead of haproxy?  But these look like internal errors.
 
 
-A few minutes later, the workload has recovered to where it was before.  It seems like we triggered a crash?  But the uptime on all of them shows 6 hours.  That said, there was a loss of connections to .236 and a bunch of ranges reported being uner-replicated for a minute.  CockroachDB did not actually restart on that node.  I do see some errors in the logs:
+A few minutes later, the workload has recovered to where it was before.  It seems like we triggered a crash?  But the uptime on all of them shows 6 hours.  That said, there was a loss of connections to .236 and a bunch of ranges reported being under-replicated for a minute.  CockroachDB did not actually restart on that node.  I do see some errors in the logs:
 
 [source,text]
 ----
@@ -1503,7 +1503,7 @@ Through all of this:
 * There have been two disk %busy spikes over 75%, both very brief -- mostly they've been below 65%.
 * Average disk I/O time has largely been under 1ms, with a few spikes as high as 15ms or so.  (Interestingly, that 15ms outlier correlates with 5ms spent queued in the device driver, which is very rare -- that generally doesn't exceed a few tens of microseconds.)
 * p99 CockroachDB heartbeat latency has peaked at around 850ms, correlated with an 800ms spike in p99 round-trip latency around that time.
-* The error rate has peaked at about 3 per second.  It's largely been zero, with spikes around 2100Z, 22:05Z, 22:15Z, 23:15Z.  The biggest spikes have been around when we bring up new nodes.  I'm not sure I'm looking at SQL errors though -- these might all be internal errors.
+* The internal error rate has peaked at about 3 per second.  It's largely been zero, with spikes around 2100Z, 22:05Z, 22:15Z, 23:15Z.  The biggest spikes have been around when we bring up new nodes.  I'm not sure I'm looking at SQL errors though -- these might all be internal errors.
 
 This has been good operational experience playing around with these operations, but feels a bit unfocused.
 

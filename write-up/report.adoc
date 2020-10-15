@@ -7,18 +7,13 @@
 
 The Oxide system's control plane requires a low-touch, highly-available, horizontally-scalable, strongly-consistent data store (see <<rfd48>>) for storing a variety of data including user configuration, hardware inventory, and runtime state.  The specific requirements around scale, performance, and functional and non-functional requirements are discussed in <<rfd53>>.  A number of modern database systems (generally grouped under the term "NewSQL") seek to meet these requirements.  This document describes our initial experiences with CockroachDB.
 
-This document starts out with our <<_goals>> and an <<_executive_summary_of_results>> for those less interested in the nitty details.  The rest of the document goes into much more detail, starting with <<_why_cockroachdb,why we focused on CockroachDB>> and some <<_cockroachdb_basics,basic concepts>> for evaluating CockroachDB and our test results.  Then we go into more detail about the tests run, caveats, areas of technical risk, etc.
+We've tried to organize this document to be most efficient for readers.  It's most important to read through the <<_goals>> and <<_executive_summary_of_results>> sections.  Readers wanting to better understand our decision-making or CockroachDB probably want to read through <<_why_cockroachdb,why we focused on CockroachDB>> and some <<_cockroachdb_basics,basic concepts>> for evaluating CockroachDB and our test results, plus the summary of tests, caveats, and areas of technical risk.  The rest of the document contains lots more detail about the tests, which we don't expect most people to pore through (though that would be welcome).  It might be useful for sanity-checking.
 
 == TODO in this document
 
-* more detailed summary of key results
-** configurations tested
-** version of CockroachDB
-** cluster sizes
-** workload sizes
-** no tuning done, including CockroachDB caches
-** tests run
+* more detailed summary of key results (see below)
 * double-check logs to verify no crashes
+* spell check
 
 == Goals
 
@@ -45,7 +40,8 @@ We tested basic operation, online expansion and contraction, and several fault s
 * Despite our inducing various failures both transient and extended, the cluster always converged to a state of sufficient replication (as measured by its own metrics) without operator intervention.
 * The documentation has generally been good: it adequately describes the system's setup and operation.  We did have some <<_open_technical_questions, open questions>> not answered by the docs.
 * Tooling has generally been good.  There are built-in tools for managing the cluster (e.g., decommissioning nodes), running a variety of workloads, etc.  The built-in web Admin UI gives good overall situational awareness.
-* The system provides good coverage of metrics about its operation, plus other observability tools (e.g., query analysis, various reports about problem nodes or ranges, etc.).  Many of these are fairly unpolished (e.g., the report about hot ranges is just a JSON endpoint).
+* The system provides good coverage of metrics about its operation, plus other observability tools (e.g., query analysis, distribution of data across nodes, various reports about problem nodes or ranges, etc.).  Many of these are fairly unpolished (e.g., the report about hot ranges is just a JSON endpoint).
+* We tested some basic reconfiguration like adjusting the GC period, and that worked as expected.
 
 There's also some disappointment:
 
@@ -58,6 +54,8 @@ There's also some disappointment:
 Again, there are lots of functionality, fault conditions, and stress scenarios that we did not test.
 
 IMPORTANT: **Our conclusion is that CockroachDB is solid enough to continue moving forward with and it's not worth spending comparable time right now evaluating other options.**
+
+IMPORTANT: **For readers:** are there any results here that we should be more concerned about than reflected here?  Are there other tests we should run now before proceeding with CockroachDB?
 
 == Why CockroachDB
 
@@ -180,6 +178,7 @@ We did not do any significant performance work like tuning the filesystem or net
 
 There are lots of tests that we considered, but did not try out:
 
+* Overload.
 * Backup/restore.
 * Online schema changes.
 * Rolling upgrade.
@@ -276,7 +275,218 @@ We surveyed technologies for 1-2 weeks in mid-May, 2020.  As described in <<rfd5
 * iterating on various tests to eliminate irrelevant issues (like bottlenecks on I/O due to choice of AWS volume type)
 * the actual tests that we wanted to run: moderately heavy workloads, online expansion, online contraction, and several fault scenarios
 
+=== Common configuration
+
+**CockroachDB:** v20.2.0-alpha.1-1729-ge9c7cc561c (2020-08-03).  This was the latest commit to _master_ (not a release) when we started testing.  We decided to stick with v20.2 (prerelease) primarily because it's using PebbleDB, which is the new storage engine, and we want to know if there are going to be issues with that.
+
+**Security:** We used the "insecure" mode of the cluster just for convenience.
+
+**Operating system:** illumos (OmniOS), because that's the plan of record for deployment (see <<rfd26>>).  Initially used latest OmniOS (as of around August 25).  Switched to using images provided by jclulow also based on OmniOS but that provide support for useful facilities like automatically expanding the root partition to match the physical device size.  Most recent testing was done on AMI `ami-012f34b61b75182e8`.
+
+**Filesystem:** ZFS, using stock configuration plus `compression=on`.  No tuning of block size.  For the non-local-NVME tests, there was only one zpool on the system built atop the single EBS device.  For the NVME tests, the root pool was still on an EBS device, but there was a separate zpool for CockroachDB built atop the local NVME device.  In all cases, this was a single-vdev pool with no slog.
+
+**Tuning:** We did essentially no tuning, including of CockroachDB (including its cache size), ZFS, the networking stack, or anything else.
+
+**Infrastructure:** AWS, using EC2 and EBS.  Specific instance types and volume types varied by test.
+
+**Workloads:** Most testing was done with `cockroach workload run kv`, the "kv" workload described https://www.cockroachlabs.com/docs/v20.1/cockroach-workload.html#workloads[here].  We did some testing with the `ycsb` workload and with `sysbench` as well.  See details with each test below.
+
+**Instance types (CPU, memory, I/O):** CockroachDB provides https://www.cockroachlabs.com/docs/v20.1/recommended-production-settings#hardware[specific recommendations for system balance]: for each vCPU, they recommend 4 GiB of memory, 150 GiB of storage, 500 IOPS, and 30 MBps of disk I/O capacity.  Each node should have at least 2 vCPUs.  We initially tested with c4.large instances (2 vCPUs, 4 GiB of memory, 62 MBps disk I/O), which don't provide enough memory per CPU by these recommendations.  We later settled on m4.large (2 vCPUs, 8 GiB of memory, 56 MBps of disk I/O) for tests with network EBS volumes and i3.large (2 vCPUs, 15 GiB memory, local NVME SSD, expected to provide plenty of local I/O throughput) for tests with local SSDs.
+
+We avoided the latest generation of instance types ("c5" and "m5") because they rely on ENA support from the guest OS, which isn't currently supported on illumos.
+
+**Volume types (IOPS):** We started with general purpose "gp2" devices, but found these <<_other_lessons_learned,unsuitable due to the bursting behavior>>.  We switched to "io1" (provisioned IOPS) class devices, initially with 500 IOPS and then with 1000 IOPS.  We also did some testing with local NVME devices (the i3.large instances), which we expect to provide considerably more than 1000 IOPS.
+
+**Data collection:** We made a custom Grafana dashboard showing key metrics, including throughput and latency, plus the balance of the workload across nodes and utilization, saturation, and errors of various parts of the system.  This data came from CockroachDB itself, the Prometheus https://github.com/prometheus/node_exporter[node_exporter], and a custom https://github.com/oxidecomputer/illumos-exporter[illumos-exporter].  These all represent server-side metrics.
+
+The `cockroach workload run` command emits client-side metrics showing cumulative errors and both per-second and cumulative operation throughput and latency (as p50, p95, p99, and pMax).  We generally configured it to record per-second latency histograms but we didn't examine these outputs.
+
+**Raw notes and data:** very raw notes from each test are in the "raw_notes" file in the cockroachdb-exploration repository.  Some raw data is available in the "data" directory of that repo.  This largely includes Grafana screenshots, but includes some output from `cockroach workload run`, too.
+
+**Reproduction:** The "cockroachdb-exploration" repository should contain nearly everything needed to reproduce the experiments here, including Terraform configurations to deploy a cluster using either EBS network volumes or local NVME devices, plus Chrony, Prometheus (configured to scrape all components), Grafana, and a load generator VM.  See the README in the repository for details.
+
+=== Very basic cluster expansion
+
+We did some basic functionality testing on 2020-08-31 to get our feet wet.  A simple but useful test shows rebalancing behavior _without_ a workload running:
+
+* Started with a 3-node cluster with 65 Ranges, which included CockroachDB's internal data plus some data created by poking around with the built-in "movr" dataset.  With a replication factor of 3, we'd expect 195 replicas divided across 3 nodes, or 65 replicas per node, which matches what we saw in CockroachDB's metrics.
+* Started a fourth node.  We'd expect about 65 * 3 / 4 = 48 replicas per node.  We observed between 46-50 replicas per node.
+* Decommissioned the fourth node using `cockroach node decommission 4`.  After a few seconds, there were no more ranges on that node.
+
+=== Early lessons
+
+A lot of the testing from 2020-09-08 2020-09-17 to was a mess because of a bunch of issues:
+
+* We saw a lot of client connection issues when using haproxy as a load balancer.  This may have resulted from bad configuration (e.g., a timeout that fired while queries were still executing and would have completed successfully).  In future tests we eliminated haproxy and just used one load generator process pointed directly at each cluster node that was going to be online for the whole test.
+* We realized partway through that the instance type we picked ("c4.large") was lower on memory than recommended (see above) and switched instance types.
+* We also realized partway through that the volume type we picked ("gp2") both didn't provide enough IOPS but also burst for the first few hours, making things seem fine for a while until they suddenly tanked.  Future tests used provisioned IOPS or local SSDs.
+* We saw a bunch of internal errors like "context deadline exceeded", which reflects overloaded cluster nodes.  This happened while serving queries and also when nodes were heartbeating.  The https://www.cockroachlabs.com/docs/v20.1/cluster-setup-troubleshooting.html#node-liveness-issues[documentation implies that this can happen when CockroachDB is starved for I/O], and we didn't see this after we fixed the I/O capacity problem, so we attributed this to that issue.
+* After hitting these problems, we had a hard time resuming the YCSB workload's init phase, which doesn't seem intended for either parallelism or resumption.  We switched to the "kv" workload instead, which we don't need to initialize before running at higher scale.
+
+This testing used the https://en.wikipedia.org/wiki/YCSB[YCSB workload implementation] built into `cockroach workload` and `sysbench`.
+
+=== Sysbench workload, 2-hour run
+
+* Date: 2020-09-18
+* Initial cluster state: 3 running nodes, 2 "dead" nodes (from previous testing)
+* Initial cluster data: empty
+* Instance type: "c4.large" (which only has half the recommended memory for this vCPU count)
+* Volume types: "io1" with provisioned IOPS (but only 500 IOPS, which is only half of what's recommended for this instance type)
+
+We started three sysbench `oltp_insert` workloads, 10 minutes apart, each one pointed at one of the three running cluster nodes:
+
+[source,text]
+----
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.227 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+...
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.66 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+...
+sysbench --threads=1 --time=0 --pgsql-host=192.168.1.214 --pgsql-port=26257 --pgsql-user=root --pgsql-db=sbtest oltp_insert run
+----
+
+These ran for about two hours before a user error (ssh timeout) killed two of them.  During this time (1600Z to 1800Z), p95 latency was fairly stable around 20ms, with p99 around 25ms.  Cluster-wide throughput was about 280 operations per second at a concurrency of 3, reflecting an average latency of about 11ms.  There was plenty of CPU headroom across the board, and on average disks had plenty of idle time, too.  By comparison, CockroachDB https://www.cockroachlabs.com/docs/stable/performance.html#latency[reports] 4.3ms average time for `oltp_insert`, which isn't too far off.  For visuals, see the graphs below, keeping in mind that this workload ramped up by 16:05Z and ramped down starting at 18:05Z.
+
+=== Sysbench workload, online expansion
+
+NOTE: This testing was done before we created more useful dashboards and dug into the performance of leaseholders vs. other gateway nodes.  It's probably less useful than the later online expansion tests, but it's included here for completeness.
+
+This testing was immediately after the 2-hour run above.
+
+[source,text]
+----
+20:44Z: resumed the cancelled sysbench workloads, resulting in 3 of them running
+20:59Z: brought up fourth CockroachDB node (db3)
+22:15Z: brought up fifth CockroachDB node (db4)
+23:12Z: brought up sixth CockroachDB node (db5)
+23:35Z: started sysbench load generators pointed at db3, db4, and db5
+----
+
+Generally, when we brought up the new nodes, there was a brief spike in latency and dip in throughput, followed by throughput improved from where it was before.
+
+Through all this, CPU utilization remained below 80%, and disks generally had plenty of headroom too.  There were some spikes in p99 CockroachDB heartbeat latency.
+
+For visuals, see the Grafana data from 2020-09-18, remembering that this workload ran from 20:44Z to the end of the data collection period.  This data is less precise than later experiments where the visuals are included inline.
+
+=== Sysbench, demonstrating leaseholder / leader behavior
+
+On 2020-09-21 I did some experiments using a basic sysbench `oltp_insert` run to observe the latency impact of using leaseholder/leader nodes as gateway nodes.  I recorded which ranges were on which nodes, ran sysbench against each node separately for 10 minutes, then looked again at which ranges were where.  There was a clear difference in throughput: 15-20% better when the gateway node was the leader node vs. any other node (regardless of whether the gateway had a replica or not).  The average write latency for these workloads was about 4.7ms for the leader and 5.6ms for the other nodes, which matches the official CockroachDB-reported average latency for this workload of 4.3ms.  (See link above.)
+
+I did a similar experiment using `oltp_point_select` to look at reads.  This was confounded a bit by CockroachDB doing a range merge partway through, but we have some clear data points.  Throughput was over 2x better for the leaseholder than for the other nodes, whether they had replicas or not.  The average read latency was about 0.87ms when the gateway node was the leaseholder and 1.7ms otherwise, which is reasonably close to the official CockroachDB-reported average latency for this workload of 0.7ms.  (See link above.)
+
+=== XXX issues from 9/23
+
+=== XXX go through raw notes from 9/23 onward
+
+=== Online expansion, small database
+
+2020-09-22
+
 XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Online contraction, small database
+
+2020-09-22
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Online expansion, big database
+
+2020-09-30
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Online contraction, big database
+
+2020-09-30
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Long-running "kv" workload
+
+XXX XXX TODO more details here
+
+2020-10-05
+
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Fault: `kill -9`
+
+2020-09-25
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Fault: OS reboot (graceful)
+
+2020-09-25
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Fault: OS panic (ungraceful reboot)
+
+2020-09-25
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Fault: transient single-node partition
+
+2020-09-25
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
+
+=== Fault: persistent single-node partition
+
+2020-09-25
+
+XXX XXX TODO more details here
+Volume types
+Instance types
+Workload
+Date
+
 
 
 == Other lessons learned
@@ -293,6 +503,7 @@ To avoid bursting, we switched to more expensive https://docs.aws.amazon.com/AWS
 
 There are many links in the text above (that are not included here) to official CockroachDB and AWS documentation.
 
+* [[[rfd26, RFD 26]]] https://26.rfd.oxide.computer/[RFD 26 Host Operating System & Hypervisor]
 * [[[rfd48, RFD 48]]] https://48.rfd.oxide.computer/[RFD 48 Control Plane Architecture]
 * [[[rfd53, RFD 53]]] https://53.rfd.oxide.computer/[RFD 53 Control plane data storage requirements]
 * [[[CockroachDB-Jepsen-Report, Jepsen report on CockroachDB]]] http://jepsen.io/analyses/cockroachdb-beta-20160829[Jepsen report on CockroachDB]
