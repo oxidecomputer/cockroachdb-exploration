@@ -9757,3 +9757,45 @@ I collected:
 I've created a new Grafana dashboard for this workload to work around the change in metric labeling that otherwise makes it impossible to show the full workload duration in a single graph.  I also tweaked it a bit (e.g., de-selected db6, which wasn't being used during this workload) to better show the data.  I've got screenshots of this for the whole duration.
 
 I've shut down the CockroachDB, load generator, and monitoring nodes because I believe we don't need these any more.  I'm not going to undeploy them yet just in case there's useful data there.
+
+== 2020-10-15
+
+Did some final work for the initial write-up.
+
+I took new screenshots from the 9/24 work because the ones I had were not from a consistent point in time, and plus the dashboard had been updated a bunch since then.
+
+I looked for CockroachDB crashes that were _not_ related to time synchronization.  To find crashes, I looked for:
+
+[source,text]
+----
+grep 'Stopping because all processes in service exited.' $(svcs -L cockroachdb)
+----
+
+That gave me the timestamps when CockroachDB exited.  Then I looked for the string '500ms' in '/cockroachdb/data/logs/*'.
+
+Here's what I found:
+
+[source,text]
+----
+db1:
+Oct 15 (ignored -- postdates all my testing)
+
+db2:
+Sep 23 23:11, 23:25 (x4) (rotated out)
+Sep 24 15:55:18 (rotated out)
+
+db3:
+Sep 23 23:25 (x2) (rotated out)
+Sep 24 15:55 (x4) (confirmed time sync)
+Sep 25 14:54 (x4) (confirmed time sync)
+
+db4:
+Oct 15 (ignored -- postdates all my testing)
+
+db5:
+Oct 15 (ignored -- postdates all my testing)
+----
+
+In summary, we don't have a lot of data to confirm this.  We're missing data from nodes that we destroyed (like the NVME cluster) and from log files that were rotated out.  However, we don't have any evidence of crashes that _weren't_ related to time sync.
+
+From what I've seen, when CockroachDB panics, it just exits rather than dumping core, so that's why I looked for that.  For good measure, I also looked for "core" in the SMF log files on all five nodes, and I also looked in `/` for core files, and I found none.

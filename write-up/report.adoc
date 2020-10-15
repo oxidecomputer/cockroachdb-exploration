@@ -9,11 +9,6 @@ The Oxide system's control plane requires a low-touch, highly-available, horizon
 
 We've tried to organize this document to be most efficient for readers.  It's most important to read through the <<_goals>> and <<_executive_summary_of_results>> sections.  Readers wanting to better understand our decision-making or CockroachDB probably want to read through <<_why_cockroachdb,why we focused on CockroachDB>> and some <<_cockroachdb_basics,basic concepts>> for evaluating CockroachDB and our test results, plus the summary of tests, caveats, and areas of technical risk.  The rest of the document contains lots more detail about the tests, which we don't expect most people to pore through (though that would be welcome).  It might be useful for sanity-checking.
 
-== TODO in this document
-
-* double-check logs to verify no crashes
-* spell check
-
 == Goals
 
 Our primary goal here is to select a technology to use as a database for the control plane.  Naturally, we'd like to select an existing system that meets our requirements rather than build one from scratch.  The underlying technical problems are quite complex.  Even if the best candidate falls short, we may still be better off adapting it (and potentially our usage of it) rather than starting from scratch.
