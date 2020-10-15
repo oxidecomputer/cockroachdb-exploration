@@ -11,8 +11,6 @@ We've tried to organize this document to be most efficient for readers.  It's mo
 
 == TODO in this document
 
-* more detailed summary of key results (see below)
-* what to say about the issues from 9/23?
 * double-check logs to verify no crashes
 * spell check
 
@@ -374,33 +372,39 @@ On 2020-09-21 I did some experiments using a basic sysbench `oltp_insert` run to
 
 I did a similar experiment using `oltp_point_select` to look at reads.  This was confounded a bit by CockroachDB doing a range merge partway through, but we have some clear data points.  Throughput was over 2x better for the leaseholder than for the other nodes, whether they had replicas or not.  The average read latency was about 0.87ms when the gateway node was the leaseholder and 1.7ms otherwise, which is reasonably close to the official CockroachDB-reported average latency for this workload of 0.7ms.  (See link above.)
 
-=== Online expansion, small database
+=== Online expansion and contraction with a small database
 
-2020-09-24
-XXX revisit this.  The screenshots I have aren't from a consistent point in time.  I'm not sure I recorded how much data there was in this database at this point (but it should be evident from the metrics).
+On 2020-09-24 we ran some expansion and contraction tests on a relatively small database in "m4.large" instances using "io1" provisioned IOPS with 1000 IOPS.  The total disk space used was about 9 GiB per node with 4 nodes.
 
-* Take new screenshots
-* Document database size, etc.
-* Annotate screenshots with relevant times
+We ran this workload once for each of the first three nodes in the 4-node
+cluster:
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+[source,text]
+----
+cockroach workload run kv --histograms kv-histograms-$(date +%FT%TZ).out --concurrency 4 --display-every=60s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.14:26257/kv?sslmode=disable
+----
 
+Timeline:
 
-=== Online contraction, small database
+[source,text]
+----
+18:38Z Start CockroachDB on db5
+19:43Z Start CockroachDB on db6
+22:05Z Start decommissioning db6 (took 5 minutes)
+22:28Z Stop db6
+22:39Z Start decommissioning db5 (took 5 minutes)
+23:02Z Stop db5
+23:12Z Start decommissioning db4 (took 8m)
+23:25Z Stop db4
+----
 
-2020-09-24
+image::small-scale-overview.png[Small scale expansion and contraction]
 
-See "Online expansion, small database"
+Similar to the large-database case: latency spikes and throughput crashes for the first few minutes, then throughput remains lower than before the event and latency higher.  This lasts 20-30 minutes and the cluster recovers.  There's no impact when we finally stop a node that's been decommissioned.
 
-XXX XXX TODO more details here
-Volume types
-Instance types
-Workload
-Date
+The larger-database case is more representative of a real workload.
+
+On 2020-09-23 (the day previous), we had expanded the cluster from 3 nodes to 4 nodes while they were on "c4.large" instances using only 500 provisioned IOPS per node.  The behavior was similar, but the impact was even worse and lasted longer.  At this point we found that we seemed not to have as much IOPS capacity or memory as recommended and changed the configuration as described here.
 
 
 === Online expansion and contraction with a big database
