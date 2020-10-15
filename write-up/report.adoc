@@ -1,6 +1,6 @@
 // Include a Table of Contents on the left hand side.
 :toc: left
-// ":icons: font" is needed for adminition and callout icons.
+// ":icons: font" is needed for admonition and callout icons.
 :icons: font
 
 = CockroachDB testing summary
@@ -44,7 +44,7 @@ We tested basic operation, online expansion and contraction, and several fault s
 
 There's also some disappointment:
 
-* In a lot of cases, both expansion and contraction of the cluster resulted in brief periods (2-3 minutes) where almost no requests completed at all and longer periods (20-30 minutes) where average and p95 latency were significantly increased (2x-3x).  Some of these tests were on systems that were underpowered in terms of IOPS, and things were better on systems with more IOPS available, but it still wasn't great.
+* In a lot of cases, both expansion and contraction of the cluster resulted in brief periods (2-3 minutes) where almost no requests completed at all and longer periods (20-30 minutes) where average and p95 latency were significantly increased (2x-3x).  Some of these tests were on systems that were under-powered in terms of IOPS, and things were better on systems with more IOPS available, but it still wasn't great.
 * There can be considerable variance in performance (10% to 100%) depending on which node receives a particular query.  This is particularly true for workloads with a working set in memory.  Since the cluster automatically splits ranges, merges ranges, and moves leaseholders around, performance can be inconsistent over time even for a uniform workload.  This automatic adaptation is probably good overall, but capacity planning and SLO management could be more difficult as a result.
 * In the few cases we wanted them, there didn't seem to be a lot of operational controls.  For example, we observed one node being particularly hot.  It did not seem that there was a way to tell CockroachDB to move some of its leases to other nodes.  (CockroachDB does try to be completely hands-off, and a fair objection to such a control is that if the system is managing leases, it may well decide to move those leases back right after the operator moves them.  Really, you don't _want_ to have to manually configure this.)
 * The primary risk identified from user experience reports is that the built-in (non-Enterprise) backup/restore option is not suitable for many production clusters.  We did not dig into this and it's probably one of the biggest open risks.
@@ -158,7 +158,7 @@ We also ran several kinds of **fault testing**:
 * **`kill -9`** instances of CockroachDB.  This had virtually no affect on the cluster.  The killed node was serving requests again in single-digit seconds.  Only in-flight requests seemed to be affected.
 * **Reboot the OS** on the system hosting one node.  This had virtually no affect on the cluster.  This node was back up and serving requests within 90 seconds, nearly all of that being OS reboot time.  Only in-flight requests seemed to be affected.
 * Initiate an **OS panic** on the system hosting one node.  (This is similar to a reboot, but behaves more like a network partition, since TCP connections are not gracefully torn down.)  This looked nearly the same as an OS reboot except that it took a little longer for the OS to come back up.
-* **Transient single-node partition**: use firewall rules to introduce a partition around a cluster node for less than the default 5-minute timeout for declaring a node "dead".  There were some oddities around the client-side reporting (see <<_open_technical_questions>>), but the overall impact was good.  There were no errors, and while latency rose, it was less than ambient flunctuations for the previous 30 minutes.  Queries per second dropped across the cluster and throughput on all nodes went down.  All nodes' CPU usage and disk throughput when down.  This is probably because one load generator was off, not because one node was down.
+* **Transient single-node partition**: use firewall rules to introduce a partition around a cluster node for less than the default 5-minute timeout for declaring a node "dead".  There were some oddities around the client-side reporting (see <<_open_technical_questions>>), but the overall impact was good.  There were no errors, and while latency rose, it was less than ambient fluctuations for the previous 30 minutes.  Queries per second dropped across the cluster and throughput on all nodes went down.  All nodes' CPU usage and disk throughput when down.  This is probably because one load generator was off, not because one node was down.
 * **Long single-node partition**: use firewall rules to introduce a partition around a cluster node for longer than the default 5-minute timeout.  We saw similar oddities around client-side latency, but the overall impact was good.  There were some multi-second latency outliers on a bunch of nodes but they were mostly beyond p99.
 
 See <<_details_on_tests_run>> for more details.
@@ -251,13 +251,13 @@ Other areas we didn't test that _should_ work include mutual client and server a
 
 == Open technical questions
 
-Is it expected that we’d see such massive impacts to latency when adding or removing nodes?
+Is it expected that we'd see such massive impacts to latency when adding or removing nodes?
 
 Has any work been done on ideal block size? ZFS performance? Use of ZIL/slog?
 
 Is it possible to split a cluster (e.g., to create a secondary copy for other purposes, like backup)?  You could almost do this by deploying 2x the nodes and temporarily doubling the replication factor.  This would result in something that it feels like you could split into two clusters.  However, the actual split would probably need to be coordinated via Raft: one side would necessarily wind up in a minority and there would need to be an explicit step to have it elect a new majority.
 
-What do all the metrics mean? Many of them aren’t well documented.  Some are named confusingly.  For example: what are range "adds" and "removes"?  They don't seem to correlate with when a range is created.  They seem to correlate with when a replica is moved -- so maybe that reflects a new replica being craeted and an old one removed?  But the stat is definitely named with "range", not "replica".
+What do all the metrics mean? Many of them aren't well documented.  Some are named confusingly.  For example: what are range "adds" and "removes"?  They don't seem to correlate with when a range is created.  They seem to correlate with when a replica is moved -- so maybe that reflects a new replica being created and an old one removed?  But the stat is definitely named with "range", not "replica".
 
 Can you manually rebalance the set of replicas or leaseholders on a node?
 
@@ -608,7 +608,7 @@ E200925 23:51:09.590144 1 workload/cli/run.go:445  ERROR: result is ambiguous (e
 
 with an increase in max latency up to 7.2 seconds (that does not affect p99).
 
-The load generator pointed at the partitioned node reports no more requsts completing.  When the partition is removed, we see some very large max query times (103 seconds), and performance immediately goes back to what it was before:
+The load generator pointed at the partitioned node reports no more requests completing.  When the partition is removed, we see some very large max query times (103 seconds), and performance immediately goes back to what it was before:
 
 [source,text]
 ----
