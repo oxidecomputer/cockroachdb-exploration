@@ -7,7 +7,7 @@
 
 See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requirements")] for background.
 
-See write-up/report.adoc for the results of this testing, including caveats, what we did and didn't test, etc.
+See https://110.rfd.oxide.computer/[RFD 110 ("CockroachDB for the control plane database")] for the results of this testing.
 
 == This repo
 
