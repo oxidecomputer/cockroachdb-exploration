@@ -19,6 +19,20 @@ AWSALIASES_QUERY="${AWSALIASES_QUERY},Public:PublicIpAddress}"
 AWSALIASES_ROOT="$(cd $(dirname ${BASH_SOURCE[0]}); pwd)"
 
 #
+# Execs the "terraform" command, but wraps it with `aws as-session` if
+# AWS_PROFILE is set.
+#
+function run_terraform {
+	if [[ -n "$AWS_PROFILE" ]]; then
+		echo "running terraform under \`aws as-session\`" \
+		    "because AWS_PROFILE is set" >&2
+		exec aws as-session terraform "$@"
+	else
+		exec terraform "$@"
+	fi
+}
+
+#
 # List all instances associated with the key above, not just those in the
 # project.
 #
@@ -98,7 +112,7 @@ function project_ssh_cmd {
 			;;
 	esac
 
-	ip="$(terraform output -json "${kind}_external_ip" | json $which)"
+	ip="$(run_terraform output -json "${kind}_external_ip" | json $which)"
 	if [[ $? != 0 || -z "$ip" ]]; then
 		echo "failed to get IP from 'terraform output'" >&2
 		return
@@ -126,7 +140,7 @@ function start_project_ssh {
 	local terraform_output
 
 	terraform_output="$(cd $AWSALIASES_ROOT/terraform && \
-	    terraform output -json \
+	    run_terraform output -json \
 	    | json mon_internal_ip.value.0 db_internal_ip.value.0 \
 	      db_external_ip.value.0)"
 

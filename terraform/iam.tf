@@ -35,7 +35,7 @@ resource "aws_iam_role_policy" "read_from_s3_bucket" {
                   "s3:List*"
               ],
               "Resource": [
-                  "arn:aws:s3:::oxide-cockroachdb-exploration"
+                  "arn:aws:s3:::${local.s3_asset_bucket}"
               ]
           },
           {
@@ -44,7 +44,7 @@ resource "aws_iam_role_policy" "read_from_s3_bucket" {
                   "s3:Get*"
               ],
               "Resource": [
-                  "arn:aws:s3:::oxide-cockroachdb-exploration/*"
+                  "arn:aws:s3:::${local.s3_asset_bucket}/*"
               ]
           },
           {

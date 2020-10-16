@@ -8,21 +8,20 @@ locals {
   mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
-  ndbs = 5
+  ndbs = 3
   // Count of NVME cluster nodes to create.
   ndbs_nvme = 0
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
 
-  // TODO: switch to ami-01bb2865054e219c1, which is a newer version of the same
-  // image with a few bugs fixed, including one that affects using pkg(1) to
-  // install packages and one that affects /etc/resolv.conf being correctly
-  // configured at boot.  I'm leaving this commented-out for now because I'm not
-  // ready to redeploy everything right now.
-  // ami = "ami-01bb2865054e219c1"
-  ami = "ami-012f34b61b75182e8"
-  nvme_ami = "ami-01bb2865054e219c1"
+  // This is the S3 bucket containing VM provisioning assets.
+  s3_asset_bucket = "oxide-cockroachdb-exploration-test"
+
+  // AMI to use for all VMs except the NVME DB nodes.
+  ami = "ami-0bc33ade03d07d4d3"
+  // AMI to use for the NVME DB nodes.
+  nvme_ami = "ami-0bc33ade03d07d4d3"
 }
 
 // CockroachDB cluster nodes
@@ -38,8 +37,8 @@ resource "aws_instance" "db" {
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.primary.id
 
-  // XXX replace this with "ebs_block_device"
-  root_block_device {
+  ebs_block_device {
+    device_name = "sdf"
     volume_size = 60
     volume_type = "io1"
     iops = 1000
@@ -72,7 +71,7 @@ resource "aws_instance" "db" {
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"db\" \"db${count.index + 1}\" \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"db\" \"db${count.index + 1}\" \"${self.private_ip}\" \"${local.s3_asset_bucket}\"",
     ]
   }
 }
@@ -115,7 +114,7 @@ resource "aws_instance" "db_nvme" {
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"db\" \"nvmedb${count.index + 1}\" \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"db\" \"nvmedb${count.index + 1}\" \"${self.private_ip}\" \"${local.s3_asset_bucket}\"",
     ]
   }
 }
@@ -145,8 +144,6 @@ resource "null_resource" "cluster_config" {
     inline = [
       "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db.*.private_ip)}\"",
       "svcadm refresh cockroachdb:default",
-      // "svcadm disable -st cockroachdb:default",
-      // "svcadm enable -s cockroachdb:default",
     ]
   }
 }
@@ -170,8 +167,6 @@ resource "null_resource" "cluster_config_nvme" {
     inline = [
       "svccfg -s cockroachdb setprop config/other_internal_ips = \"${join(",", aws_instance.db_nvme.*.private_ip)}\"",
       "svcadm refresh cockroachdb:default",
-      // "svcadm disable -st cockroachdb:default",
-      // "svcadm enable -s cockroachdb:default",
     ]
   }
 }
@@ -218,7 +213,7 @@ resource "aws_instance" "loadgen" {
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"loadgen\" \"loadgen${count.index}\" \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"loadgen\" \"loadgen${count.index}\" \"${self.private_ip}\" \"${local.s3_asset_bucket}\"",
     ]
   }
 }
@@ -265,7 +260,7 @@ resource "aws_instance" "mon" {
 
   provisioner "remote-exec" {
     inline = [
-      "bash -x /var/tmp/vminit.sh \"mon\" \"mon${count.index}\" \"${self.private_ip}\"",
+      "bash -x /var/tmp/vminit.sh \"mon\" \"mon${count.index}\" \"${self.private_ip}\" \"${local.s3_asset_bucket}\"",
     ]
   }
 }

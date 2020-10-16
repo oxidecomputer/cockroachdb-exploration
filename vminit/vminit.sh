@@ -10,14 +10,6 @@ set -o pipefail
 set -o xtrace
 
 #
-# CONSTANT CONFIGURATION
-#
-
-# S3 bucket where our assets are stored.
-VMI_S3BUCKET="oxide-cockroachdb-exploration"
-
-
-#
 # COMMAND-LINE ARGUMENTS
 #
 
@@ -28,7 +20,8 @@ VMI_ROLE="$1"
 VMI_ALIAS="$2"
 # internal IP for this VM
 VMI_IP="$3"
-
+# S3 bucket where our assets are stored.
+VMI_S3BUCKET="$4"
 
 #
 # VARIABLES
@@ -40,6 +33,8 @@ VMI_EXTRA_TARBALL=
 VMI_USER=
 # role-specific ZFS dataset name
 VMI_DSNAME=
+# zpool for our work
+VMI_ZPOOL=
 
 # fail ARGS: print message to stderr and exit failure
 function fail
@@ -49,7 +44,7 @@ function fail
 }
 
 # Validate arguments.
-[[ $# == 3 ]] || fail "usage: $arg0 ROLE ALIAS INTERNAL_IP"
+[[ $# == 4 ]] || fail "usage: $arg0 ROLE ALIAS INTERNAL_IP S3BUCKET"
 
 case "$VMI_ROLE" in
 	db|loadgen)
@@ -74,22 +69,6 @@ esac
 gzcat < /var/tmp/fetcher.gz > /var/tmp/fetcher
 chmod +x /var/tmp/fetcher
 
-# Wait up to 60 seconds for DNS to work.  It's not clear yet why this is needed.
-maxcount=60
-dns_okay=false
-for (( iter = 0; iter < maxcount; iter++ )) {
-	echo "$(date +%FT%TZ): attempt $iter of $maxcount"
-	if host oxidecomputer.com > /dev/null; then
-		dns_okay=true
-		break;
-	fi
-
-	sleep 1
-}
-if [[ $dns_okay != "true" ]]; then
-	fail "failed to lookup oxidecomputer.com in DNS $maxcount times"
-fi
-
 # Fetch both the common tarball and the one for this role.
 /var/tmp/fetcher "$VMI_S3BUCKET" "vminit-common.tgz" \
     > /var/tmp/vminit-common.tgz
@@ -109,21 +88,26 @@ echo "$VMI_ALIAS" > /etc/nodename
 /usr/bin/sed -i '/^PARAM_IGNORE_LIST=/s/=.*/=12/' /etc/default/dhcpagent
 
 # Figure on which disk to create our non-root zpool.
-rpool_disk="$(zpool list -v -H rpool | awk 'NR == 2{ print $1 }')"
-other_disks=$(diskinfo -Hp | awk '$2 != "'$rpool_disk'"')
-if [[ $(wc -l <<< $other_disks) -ne 1 ]]; then
-	fail "could not choose disk for new zpool"
+if [[ "$VMI_ROLE" == "db" ]]; then
+	rpool_disk="$(zpool list -v -H rpool | awk 'NR == 2{ print $1 }')"
+	other_disks=$(diskinfo -Hp | awk '$2 != "'$rpool_disk'"')
+	if [[ $(wc -l <<< $other_disks) -ne 1 ]]; then
+		fail "could not choose disk for new zpool"
+	fi
+	IFS=$'\t' read u1 name u2 u3 size rmv ssd <<< $other_disks
+	if [[ "$size" =~ [^0-9] ]]; then
+		fail "failed to parse size of disk"
+	fi
+	avail_disk="$name"
+	zpool create -O compression=on tank "$avail_disk"
+	VMI_ZPOOL=tank
+else
+	VMI_ZPOOL=rpool
 fi
-IFS=$'\t' read u1 name u2 u3 size rmv ssd <<< $other_disks
-if [[ "$size" =~ [^0-9] ]]; then
-	fail "failed to parse size of disk"
-fi
-avail_disk="$name"
 
-# Set up zpool, filesystems and users.
-zpool create -O compression=on tank "$avail_disk"
-zfs create -o mountpoint=/export/home tank/home
-zfs create -o mountpoint="/$VMI_DSNAME" "tank/$VMI_DSNAME"
+# Set up filesystems and users.
+zfs create -o mountpoint=/export/home $VMI_ZPOOL/home
+zfs create -o mountpoint="/$VMI_DSNAME" "$VMI_ZPOOL/$VMI_DSNAME"
 useradd -d "/export/home/$VMI_USER" -m -s /bin/bash "$VMI_USER"
 
 # Unpack the tarballs and correct permissions for the unpacked dataset.

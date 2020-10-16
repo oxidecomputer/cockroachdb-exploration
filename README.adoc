@@ -30,56 +30,142 @@ The code in this repo uses Terraform to provision a multi-node CockroachDB clust
 
 == Using this repo
 
+=== Prerequisites
+
 To deploy a cluster, you need to have:
 
 - terraform configured using your AWS account
-- an ssh key configured in AWS called "dap-terraform" OR change locals.ssh_key_name in terraform/nodes.tf to refer to your key's name
-- a bunch of binaries downloaded by hand into this repo.  There's not a great way to assemble this yet, but .gitignore can tell you what they are and where they go.
+- an ssh key pair configured in AWS called "dap-terraform" OR change locals.ssh_key_name in terraform/nodes.tf to refer to your key's name
+- IAM permissions to configure the Terraform cluster (TBD: which perms, exactly?)
+- the `aws` CLI configured locally
+- read access to the oxide-cockroachdb-exploration S3 bucket
 
-**With those prerequisites in place**, you can construct the tarball to be used on each host:
+=== Step 1: Download and unpack the raw proto tarball
+
+Before deploying the cluster, you must download and unpack the "proto" tarball, which lives in that S3 bucket.  **From the root of your clone of this repository:**
+
+[source,text]
+----
+$ aws s3 cp s3://oxide-cockroachdb-exploration/proto-raw.tgz ./proto-raw.tgz
+$ tar xzf proto-raw.tgz
+----
+
+This will unpack a bunch of files into the `./vminit` directory.  These are **built** binaries, configuration, and other files for the various programs we use: CockroachDB, Prometheus, Grafana, Chrony, haproxy, etc.  They're organized by role ("common", "db", and "mon"), and each role's directory contains files to be installed into the target VM starting at "/".  Note that there are also files _in this repo_ mixed in with the files extracted from `proto-raw.tgz`.  This is a little janky, but it allows us to keep config files and the like under source control without having to check in gigantic binaries.
+
+NOTE: Most of these files are not necessarily for a stock deployment, but you do need `./vminit/fetcher.gz` from that tarball.  This is an illumos build of the "fetcher" tool contained in this repo.
+
+=== Step 2: Create S3 buckets
+
+You will need to create two S3 buckets:
+
+* `$s3_terraform_bucket`: will be used to store Terraform state
+* `$s3_asset_bucket`: will be used to store assets used at deployment time for the VMs
+
+These can be the same bucket, if you want.  You can create these using the S3 web console or the S3 CLI.
+
+To use these:
+
+1. Modify `./terraform/aws.tf`.  In the block starting with `backend "s3"`, set `"bucket"` to your `$s3_terraform_bucket` that you created above.  Make sure the `"region"` is set correctly, too.
+2. Modify `./terraform/nodes.tf`.  In the `locals` block at the top, set `s3_asset_bucket` to the name of your `$s3_asset_bucket`.
+
+=== Step 3: Build and upload the VM tarballs
+
+Now build the tarballs and upload them to S3:
 
 [source,text]
 ----
 $ cd vminit
-$ make
+$ make all
+$ aws s3 cp vminit-common.tgz s3://$s3_asset_bucket/vminit-common.tgz
+$ aws s3 cp vminit-cockroachdb.tgz s3://$s3_asset_bucket/vminit-cockroachdb.tgz
+$ aws s3 cp vminit-mon.tgz s3://$s3_asset_bucket/vminit-mon.tgz
+$ cd ..
 ----
 
-Then upload these to the S3 bucket:
+=== Step 4: Deploy the cluster
 
-[source,text]
-----
-$ aws s3 cp vminit-common.tgz s3://oxide-cockroachdb-exploration/vminit-common.tgz
-$ aws s3 cp vminit-cockroachdb.tgz s3://oxide-cockroachdb-exploration/vminit-cockroachdb.tgz
-$ aws s3 cp vminit-mon.tgz s3://oxide-cockroachdb-exploration/vminit-mon.tgz
-----
-
-Then use terraform to deploy the cluster:
+Now, you can configure Terraform and deploy the cluster:
 
 [source,text]
 ----
 $ cd terraform
+$ terraform init
 $ terraform apply
 ----
 
-This will emit the public and private IPs of all the nodes in the cluster.  Note the private IP address of any of the database nodes, then log into the load generator and run:
+On success, this will output the public and private IPs of all the nodes in the cluster.  You will need to ssh to the _public_ IP address of _each_ database node and enable CockroachDB with:
 
 [source,text]
 ----
-$ ssh root@$LOADGEN_PUBLIC_IP
+$ svcadm enable -s cockroachdb
+----
+
+(These tools deliberately don't do this by default because in some cases we want to provision more nodes than we initially enable.  This gives you control over which nodes form the initial cluster.)
+
+Now, note the _public_ IP address of the load generator node and the _private_ IP address of any of the database nodes, then log into the load generator and run:
+
+[source,text]
+----
+$ ssh root@LOADGEN_PUBLIC_IP
 $ configure_cluster --host DB_PRIVATE_IP
 ----
+
+You should now have a cluster running and being monitored!
+
+The easiest way to see the Grafana graphs of the cluster is to set up an SSH tunnel, connect to Grafana, and look at the "Testing Dashboard".  The `env.sh` file in this repo contains aliases to help with this:
+
+[source,text]
+----
+$ source env.sh
+$ start_project_ssh
+mon internal IP: 192.168.1.146
+db0 internal IP: 192.168.1.24
+db0 external IP: 54.202.147.117
+ssh -o "StrictHostKeyChecking accept-new" -L9090:192.168.1.146:9090 -L3000:192.168.1.146:3000 -L8080:192.168.1.24:8080 root@54.202.147.117
+$
+----
+
+Take the command it outputs and _run it yourself_ to set up SSH tunnels for Grafana, Prometheus, and the CockroachDB Admin UI.  You can access Grafana at http://127.0.0.1:3000/ (load up the "Testing Dashboard") and you can access the CockroachDB Admin UI at http://127.0.0.1:8080/.  (If you get a 404 for the CockroachDB Admin UI, make sure you ran `configure_cluster` above.)
+
+To log into Grafana, use the default username and password, both of which are "admin".
+
+=== If you need to modify the VM contents
+
+You can modify the files under `vminit/{common,mon,db}` in order to modify the corresponding files in deployed VMs.  To apply these changes, use the steps above to build new VM tarballs, upload to your S3 asset bucket, and redeploy.
+
+For files under version control, remember to upstream your changes to this repository.  **Remember that many of these files are not under version control, but came from the proto-raw.tgz tarball instead.**  To update the canonical copy of these, construct a new tarball and upload it to the "oxide-cockroachdb-exploration" S3 bucket.
+
+=== Constructing proto-raw.tgz
+
+"proto-raw.tgz" is currently constructed and maintained by hand.  It consists of:
+
+* `vminit/common`: a directory tree of files to be installed into all VMs.  This includes the binaries, libraries, and supporting files for Chrony, illumos-exporter, and node_exporter.
+* `vminit/cockroachdb`: a directory tree of files to be installed into CockroachDB database and load generator VMs.  This includes the binaries, libraries, and supporting files for CockroachDB itself, sysbench, haproxy, etc.
+* `vminit/fetcher.gz`: a gzipped copy of a _release_ build of tools/fetcher (in this repo) for illumos
+* `vminit/mon`: a directory tree of files to be installed into the monitoring VM.  This includes the binaries, libraries, and supporting files for Prometheus and Grafana.
+
+The builds generally come from https://github.com/oxidecomputer/garbage-compactor/[garbage-compactor] (for components that are present there) or else fairly stock builds.  Note that there are configuration files and the like stored _in this repo_ (not proto-raw.tgz) that will go into some of the same directories under `vminit`.  See the note above about this.
+
+Once you've constructed the directory layout by hand, upload this to the S3 bucket so that other users can use this tarball.
+
+=== This seems janky
+
+Yes, there's a lot of room for improvement here.  This was a quick solution for keeping this process fairly reproducible.
 
 
 == Known issues
 
 * cockroachdb: We're currently working on a build from master from the summer.  We should switch to a release build and make sure we're exercising Pebble.  (We are exercising Pebble now, but if we switch to the latest release as of this writing, we will be back on RocksDB.)
 * cockroachdb: Readline functionality (e.g., up arrow to see previous command) doesn't work in `cockroach sql` shell
-* this repo: None of this is currently easily reproducible from scratch because setting up the VMs relies on several tarballs built from this repo, but the contents of them don't exist in this repo (because it would involve checking in a bunch of large binaries that we don't want to carry on forever).  The best solution I've come up with for this is to put these binaries into a submodule that's incorporated here.  That way, people casually working on the repo don't need to download these binaries (and we don't necessarily need to download them forever when we clone, even if we change the way all this works), but it'll still all be present.
 * chrony setup: Sometimes a cold start of the VMs leaves CockroachDB in maintenance, having crashed because its clock was too far out of sync.  This should not be possible because we're starting chrony and configuring it to wait until it has successfully sync'd the clock (with step, not slew) _before_ starting CockroachDB on all nodes.  Still, it happens sometimes.
 * cockroachdb: Before you've initialized the CRDB cluster, if you go to the adminui, you get a very blank 404 page
 * terraform: we sometimes hit: https://github.com/terraform-providers/terraform-provider-aws/issues/12533. Retrying `terraform apply` has worked around the issue.
 * cockroachdb: I tried activating statement diagnostics for an UPSERT that one of the workloads runs to see what that does.  This produced a bundle that was 23 bytes (0 bytes downloaded, for some reason).  This may have been a known bug (see raw notes file) but I'm not sure.  https://www.youtube.com/watch?v=xUw8dN-yJU4&feature=emb_logo[There's a good, short video showing the data in these bundles.]
 * cockroachdb: flags for the `cockroach workload` command do not match the online docs
+* my tools: when running `configure_cluster`, for some reason we only see one node in the haproxy config file even though all three seemed to be up when we configured the cluster.  This hasn't been a problem because I abandoned haproxy early on.
+* cockroachdb: missing illumos implementations for a lot of the system metrics (which I believe come from gosigar).
+* my tools: should try setting up a "secure" cluster
+* my tools: "env.sh" listing of VMs should exclude terminated ones, particularly for --stop-instances and --start-instances
 
 CockroachDB recently changed the default from RocksDB to PebbleDB, despite the documentation (even for the build that I'm using) not having been updated to reflect that.
 

@@ -4224,7 +4224,7 @@
         "name": "node",
         "options": [],
         "query": "label_values(sys_uptime{job=\"cockroachdb\",cluster=\"$cluster\"},instance)",
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
         "sort": 3,
@@ -4305,8 +4305,8 @@
     ]
   },
   "time": {
-    "from": "2020-09-30T19:00:00.000Z",
-    "to": "2020-10-01T01:00:00.000Z"
+    "from": "now-30m",
+    "to": "now"
   },
   "timepicker": {
     "refresh_intervals": [

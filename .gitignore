@@ -1,7 +1,8 @@
+proto-raw.tgz
+README.html
 terraform-key
 terraform-key.pub
 terraform/.terraform
-vminit/binaries.tgz
 vminit/cockroachdb/cockroachdb/bin/cockroach
 vminit/cockroachdb/cockroachdb/bin/haproxy
 vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1
@@ -15,13 +16,9 @@ vminit/common/opt/oxide/share/man/man1/chronyc.1
 vminit/common/opt/oxide/share/man/man5/chrony.conf.5
 vminit/common/opt/oxide/share/man/man8/chronyd.8
 vminit/fetcher.gz
-vminit/grafana-*illumos*amd64*.tar.gz
 vminit/mon/mon/grafana/grafana
 vminit/mon/mon/grafana/grafana-7.1.5-1598982438
 vminit/mon/mon/prometheus/prometheus
-vminit/mon/mon/prometheus/prometheus-old
-vminit/sysbench.tgz
 vminit/vminit-cockroachdb.tgz
 vminit/vminit-common.tgz
 vminit/vminit-mon.tgz
-vminit/vminit.tar.gz

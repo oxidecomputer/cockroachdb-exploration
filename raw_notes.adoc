@@ -9799,3 +9799,25 @@ Oct 15 (ignored -- postdates all my testing)
 In summary, we don't have a lot of data to confirm this.  We're missing data from nodes that we destroyed (like the NVME cluster) and from log files that were rotated out.  However, we don't have any evidence of crashes that _weren't_ related to time sync.
 
 From what I've seen, when CockroachDB panics, it just exits rather than dumping core, so that's why I looked for that.  For good measure, I also looked for "core" in the SMF log files on all five nodes, and I also looked in `/` for core files, and I found none.
+
+
+== 2020-10-20
+
+Notes from the last few days of making this process more reproducible.
+
+The main thing to fix was adding documentation and packaging up all the illumos binaries and related files so that others could easily use them.  Previously, these were just untracked files in git.  I initially thought I'd use a submodule -- that way, they'd be version-controlled, but people wouldn't necessarily _need_ to download them to deploy a basic cluster (if they were using the same S3 bucket I've been using and want to just use the same binaries I'd already uploaded there).  This didn't work because GitHub has a limit on file size of something like 100 MiB.
+
+I wound up just putting these files into a "proto-raw.tgz" tarball and uploading them to the S3 bucket that I've been using.
+
+I ran into a bunch of issues along the way:
+
+* I had never tested my fix to modify the "db" deployment to use external EBS volumes.  This had 1-2 small issues with it.
+* I couldn't create a parallel Terraform universe because some of my Terraform resources are singletons within an account and I didn't want to destroy my existing resources.  Since Adam is already moving our AWS infrastructure to separate accounts, I swithced to using a new account for this work.  I ran into several issues around this (but they were good to invest in fixing):
+** My account needed to have multi-factor auth (MFA) enabled.  Without this, the attempt to add a new role in the Console just fails with a generic security error.
+** There was some confusing in configuring the CLI to use a new profile using this role.  With this resolved, I can set AWS_PROFILE=oxide-sandbox-dap in order to run commands under the new account.
+** Terraform doesn't handle running under a role with MFA, so we use https://github.com/transposit/awscli-as-session[awscli-as-session] to manage this.  This sort of thing (if not this exact implementation) seems to be the way to do this.
+** I ran into various IAM issues, needing to create S3 buckets, etc. that I either hadn't run into before or forgot about.  For example, the AMI images I've been using weren't available to my new account.
+** Another example is that the instances weren't able to read from my main bucket.  Adam later told me this may be because the policy that would allow them to do so is missing the account number from the ARN identifying the bucket.  Anyway, I decided to work around this problem by having the user (that's following the README) create their own S3 bucket for storing the VM artifacts.  This is a little more annoying, but it has the nice property that people aren't going to clobber each others' binaries.  (It's not that I expect people to be doing this a lot, but I could definitely see a person doing this for the first time accidentally copying the same binaries that I'm using.)
+* With the AWS issues out of the way, my deployments kept running into the same issue I'd seen previously where `/etc/resolv.conf` is empty on startup.  I talked with Joshua about this and he made a new image for me to use.
+
+I've now tested the full deployment, following the README instructions, to deploy both non-NVME "db" instances and NVME "nvmedb" instances and all that works.
