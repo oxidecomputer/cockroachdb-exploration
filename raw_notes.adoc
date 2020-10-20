@@ -9821,3 +9821,51 @@ I ran into a bunch of issues along the way:
 * With the AWS issues out of the way, my deployments kept running into the same issue I'd seen previously where `/etc/resolv.conf` is empty on startup.  I talked with Joshua about this and he made a new image for me to use.
 
 I've now tested the full deployment, following the README instructions, to deploy both non-NVME "db" instances and NVME "nvmedb" instances and all that works.
+
+
+
+Now, trying to convince myself I haven't left state in AWS somewhere.
+
+Within my new account:
+
+* there are now no S3 buckets
+* prior to removing the S3 buckets, I checked for Terraform state files.  I made sure that I had `terraform destroy`ed everything.
+* I confirmed that there are no non-terminated Instances.  There are various VPC objects, but they seem to be the default VPC, default subnet, etc. using different IP ranges than I had been using, so I don't believe these were created by Terraform.
+
+In the main account (aka my old account):
+
+* There *are* resources, mostly shutdown, from my last run.  At the very least, I want to keep the "mon" VM around for a while because we might want to revisit the raw data.
+* As a result, there's also Terraform state in bucket "oxide-terraform-backend" key "crdb-exploration".
+* The "oxide-cockroachdb-exploration" bucket exists and includes "vminit" tarballs (a few weeks old at this point), plus proto-raw.tgz and the original CockroachDB binaries "cockroachdb.tar.gz".
+* In us-west-1, I don't see any EC2 resources (instances, volumes, etc.), VPC resources (elastic IPs, non-default security groups, etc.), S3 buckets, or IAM resources that came from Terraform.
+
+That's all fine.  Here's what might need cleanup: there's a Terraform state file called "crdb-exploration-test" in the oxide-terraform-backend bucket.  I believe this one I created on Friday as part of my aborted attempt to create a parallel universe for testing.  However, its contents are empty.  I'm just going to remove the file.
+
+What about any state left behind?  There are three versions of this file.  The last one is empty.  So there are only two to consider.
+
+First one (serial 0):
+
+* resources with no instances: instance profile, iam role policy, "db" instance, "db_nvme" instance, "loadgen" instance, "mon" instance, gateway
+* resources with instances: gateway, route, security group, security group rule, security group rule, security group rule, subnet, vpc.  The ones with ARNs all are in west-2.
+
+Second one (serial 1):
+
+* resources with no instances: instnace profile, iam role policy (x2), "db" instance, "db_nvme" instance, "loadgen" instance, "mon" instance
+* resources with instances: gateway (west-1), route, security group (west-1), security group rule (x3), vpc (west-1).
+
+I believe none of these resources costs money, anyway.
+
+I also went through the Terraform output by hand and confirmed that it didn't appear to try to create any resources other than the ones named above, and it appears to have destroyed all of those, at least in west-1 (the second attempt).  I _don't_ think I ever ran "terraform destroy" on west-2, probably because many of these resources overlapped with the ones in use by my primary cluster.
+
+I've now confirmed that there _is_ a second VPC resource in west-2 for "crdb_exploration".  I'm going to go ahead and try to remove these by:
+
+(1) cloning this repo into a "cleanup" version
+(2) resurrecting the Terraform config that I had deleted for "crdb-exploration-test" that referred to resources in west-2 (this would be serial 0, I believe)
+(3) modifying the Terraform config in the clone to point to that Terraform state file
+(4) run "terraform destroy" to destroy those resources.
+(5) check that they seem to be gone.
+(6) clean up my "cleanup" clone.  Remove Terraform state file from S3 bucket.
+
+I did all this successfully.
+
+For future reference, I'm going to put the raw Terminal transcripts for both the mess-up session and the cleanup session into this repo with this commit, but I'll remove it shortly after since it's not useful unless we find something was lost and want to understand why.
