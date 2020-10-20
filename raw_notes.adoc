@@ -9824,7 +9824,9 @@ I've now tested the full deployment, following the README instructions, to deplo
 
 
 
-Now, trying to convince myself I haven't left state in AWS somewhere.
+Now, trying to convince myself I haven't left state in AWS somewhere.  The reason is that on Friday:
+
+> I think I have landed in some sort of Terraform/AWS hell...I wanted to create a totally parallel world for testing...I changed the terraform state S3 key to something else, figuring it would not find anything and try to recreate a parallel world.  And it did...but it failed because of a name conflict, and I didn't look carefully at the message, and I assumed it was because some of these resources were given names that had to be unique in the AZ, so I changed my config to be in us-west-1 for a minute and tried again...but the real problem was that the IAM roles have to be unique...and those are AWS-wide...So I've presumably got some resources in us-west-1 and us-west-2...I just did a successful terraform destroy in us-west-1, so I think that probably got everything there...Now that I did the destroy, I guess it clobbered its state file, so I can't even refresh to see what it finds (which makes sense, I guess -- it would only find what was in the state)...
 
 Within my new account:
 
