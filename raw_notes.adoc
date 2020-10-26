@@ -9871,3 +9871,140 @@ I've now confirmed that there _is_ a second VPC resource in west-2 for "crdb_exp
 I did all this successfully.
 
 For future reference, I'm going to put the raw Terminal transcripts for both the mess-up session and the cleanup session into this repo with this commit, but I'll remove it shortly after since it's not useful unless we find something was lost and want to understand why.
+
+
+== 2020-10-26
+
+Summary of the day:
+
+- reviewed data from expansion/contraction testing on NVME with large database size to summarize min workload throughput
+- reviewed data from fault testing on non-NVME to summarize min workload throughput
+
+=== Expansion/contraction testing
+
+Today I want to better characterize the results of some of the cluster expansion/contraction testing.
+
+As part of this, I dug into Prometheus, Grafana, choice of rate intervals, etc.  This is a real rabbit hole.  As part of this, I discovered that Grafana had assumed a default Prometheus scrape interval of 15s, but we're using 10s.  However, I can't correct this because:
+
+> This datasource was added by config and cannot be modified using the UI. Please contact your server admin to update this datasource.
+
+This was because I marked this datasource uneditable in the config because it would be clobbered by a subsequent update.
+
+It took some time but I figured out how to update this in an existing config (adding a deleteDatasource to the same provisioning file).  I also figured out the right config for specifying that the Prometheus scrape interval is 10s.
+
+Now let's get to the experiment and the data.
+
+Key questions:
+
+* How many requests are _actually_ completing?
+* How badly is latency impacted?
+
+Timeline:
+
+    2020-09-30T19:31Z Enabled CockroachDB node 4
+    2020-09-30T21:09Z Enabled CockroachDB node 5
+    2020-09-30T22:15Z Enabled CockroachDB node 6
+    2020-09-30T22:26Z Increase load generator concurrency from 2 per node to 4 per node
+    2020-09-30T22:44Z Reduce load generator concurrency back to 2 per node
+    2020-09-30T22:58Z Begin decommissioning node 6 (took 11m)
+    2020-09-30T23:26Z Begin decommissioning node 5 (took 23m)
+    2020-09-30T23:47Z Begin decommissioning node 4 (took 23m)
+
+General note: metrics are scraped every 10s
+
+Initial conditions: 19:20Z to 19:30Z (10 minutes):
+
+* metric note: used 40 second averages, consistent with recommendations based on 4x scrape interval
+* throughput: 1148 rps (avg), 1031 rps (min) to 1254 rps (max)
+** selects: 918 rps (avg)
+** inserts: 230 rps (avg)
+** per-node: 327-355 rps (range of averages)
+** There's a clear oscillation with a period of about 90s
+* latency:
+** p95: 8.4ms (avg of avgs), 7.4ms (min) to 10ms (max)
+** p99: 16ms (avg of avgs), 13ms (min) to 20ms (max)
+* CPU utilization: total range 51%-92%, avg range 64-73%
+* Disk utilization: peaked at 43%, avg 18%-20%
+* Disk I/O:
+** writes: 1.8 - 100.5 MBps writes (avg of avgs: 13.1 MBps)
+** reads: 57-108 MBps reads (avg of avgs: 84 MBps)
+
+Next interval: after bringing up node 4: 19:31Z to 19:41Z (10 minutes):
+
+* throughput: 638 rps; minimum 246 rps @ 19:32Z
+** selects: 510 rps (avg); minimum 196 rps
+** inserts: 128 rps (avg); minimum 50 rps
+** per-node: 198-221 rps (range of averages)
+* latency:
+** p95: 13ms (avg of avgs)
+** p99: 54ms (avg of avgs)
+* CPU utilization peaked at 94% (may reflect periods of saturation)
+* Disk utilization peaked at 71%
+* Disk average I/O time peaked at 3.6ms -- all data points above 2.4ms were on the new node
+
+Next interval: before bringing up node 5: 20:58Z to 21:08Z (10 minutes):
+
+* throughput: 1431 rps (avg), 1270 rps (min) to 1520 rps (max)
+** selects: 1145 rps (avg)
+** inserts: 286 rps (avg)
+** per-node: 460-485 (avg) -- nodes 1-3 only (node 4 not being used as a gateway)
+** There's still a clear oscillation like before.
+* latency:
+** p95: 6.2ms (avg of avgs), 5.5ms (min) to 6.9ms (max)
+** p99: 11ms (avg of avgs), 8.5ms (min) to 13.7ms (max)
+* CPU utilization: avg range 42%-68% (a little less than before)
+
+At this point, the data summary is pretty time-consuming, and I'm not sure we care about this level of detail.  I'm going to focus on getting graphs of the transitions and documenting the minimum values.
+
+The following summarize minimum throughput in the 20 minutes surrounding each event (about 10 minutes on either side):
+
+Bringing up node 4: min throughput = 196rps +  50rps = 246 rps
+Bringing up node 5: min throughput = 488rps + 121rps = 609 rps
+Bringing up node 6: min throughput = 685rps + 167rps = 852 rps
+Decommission node 6: min throughput = 237rps + 61rps = 298 rps
+Decommission node 5: min throughput = 123rps + 33rps = 156 rps (very high CPU utilization)
+Decommission node 4: min throughput = 169rps + 44rps = 213 rps
+
+I want to see how fine-grained a graph I can get without sacrificing any data points.  There are 563 data points per graph with a min interval of 10s, or 93 minutes.  That's enough to cover the decommissioning set, but not the bringup set.
+
+I saved a screenshot of the decommission set from 22:50Z to 00:20Z.  There are two worrisome periods here that weren't captured above:
+
+23:09Z (during decommission n6): 78rps + 19rps = 97rps
+00:08Z (during decommission n4): 33rps +  8rps = 41rps
+
+I looked at longer windows of time after each bring-up.
+
+- 19:30Z - 20:00Z: worst part captured above
+- 21:08Z - 21:38Z: worst part captured above
+- 22:15Z - 22:58Z: slightly worse data point @ 22:23:40Z @ 672 rps + 165 rps = 837 rps
+
+=== Fault testing
+
+Recall this was the non-NVME database.
+
+Created a more fine-grained graph for the period 2020-09-25T19:50Z to 2020-09-25T21:20Z.  Interval is still 10s, which is good.  These are 40s rate intervals.
+
+Looking at the graph, the only visible decreases in throughput are around 20:45Z (1296 rps + 328rps = 1624 rps) and 20:52Z (min for the whole period, 982 rps + 250 rps = 1232 rps).  Timeline:
+
+19:55Z: SIGKILL
+20:02Z: SIGKILL
+20:08Z: SIGKILL
+20:19Z: SIGKILL
+20:44Z: OS reboot (one of the events noted above)
+20:51Z: OS panic (one of the events noted above)
+
+I then looked at a graph from 23:40Z to 00:40Z (1 hour) to cover the partition testing.
+
+The throughput impacts are a little more complicated to summarize in writing.  The minimum throughput dropped to two notable minima:
+
+00:08Z: 693 rps + 177 rps = 870 rps (corresponds with 5 minutes into the long partition)
+00:31Z: 736 rps + 178 rps = 914 rps (corresponds with _end_ of the long partition)
+
+These are the two periods where lots of rebalancing would have kicked off.
+
+TODO:
+
+* caveat with all of the above: 40-second averages.  Any black hole shorter than that would not be visible.
+* look for any client data to address ^
+* organize screenshots that I took
+* update RFD 110

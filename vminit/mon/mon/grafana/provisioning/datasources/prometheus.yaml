@@ -5,5 +5,7 @@ datasources:
     access: proxy
     url: http://localhost:9090
     version: 1
+    jsonData:
+      timeInterval: 10s
     # Not editable because future versions of this file will clobber changes.
     editable: false

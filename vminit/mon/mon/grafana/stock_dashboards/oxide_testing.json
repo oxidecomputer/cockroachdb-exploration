@@ -4198,7 +4198,7 @@
         "name": "cluster",
         "options": [],
         "query": "sys_uptime{job=\"cockroachdb\"}",
-        "refresh": 1,
+        "refresh": 2,
         "regex": "/cluster=\"([^\"]+)\"/",
         "skipUrlSync": false,
         "sort": 1,
@@ -4224,7 +4224,7 @@
         "name": "node",
         "options": [],
         "query": "label_values(sys_uptime{job=\"cockroachdb\",cluster=\"$cluster\"},instance)",
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 3,
@@ -4240,8 +4240,8 @@
         "auto_min": "10s",
         "current": {
           "selected": false,
-          "text": "30s",
-          "value": "30s"
+          "text": "40s",
+          "value": "40s"
         },
         "datasource": null,
         "hide": 0,
@@ -4251,9 +4251,14 @@
         "name": "rate_interval",
         "options": [
           {
-            "selected": true,
+            "selected": false,
             "text": "30s",
             "value": "30s"
+          },
+          {
+            "selected": true,
+            "text": "40s",
+            "value": "40s"
           },
           {
             "selected": false,
@@ -4296,7 +4301,7 @@
             "value": "1d"
           }
         ],
-        "query": "30s,1m,5m,10m,30m,1h,6h,12h,1d",
+        "query": "30s,40s,1m,5m,10m,30m,1h,6h,12h,1d",
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -4336,5 +4341,5 @@
   "timezone": "utc",
   "title": "Testing Dashboard",
   "uid": "uPqFz_DMk",
-  "version": 23
+  "version": 24
 }
