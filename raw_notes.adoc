@@ -10008,3 +10008,27 @@ TODO:
 * look for any client data to address ^
 * organize screenshots that I took
 * update RFD 110
+
+
+== 2020-10-27
+
+Time to look at client data.  I have the three output files: 1.out, 2.out, 3.out.  These have mtimes 2020-09-30T18:04Z.  From 1.out, I subtracted the last data point (4941.6s) to calculate the actual start time, which was 16:42:02Z.  That matches my notes.  The problem is that this was for a load generator run _before_ the expansion testing -- indeed, the mtime alone tells us that they stopped running well before the real testing started.  (This is consistent with my notes, too.)  This is unfortunate.  It means I either need to make sense of the histogram files (figure out which are which and parse the histograms, too), look for other per-minute summary files I might have left on the load generator, or else run the test again.
+
+I checked the load generators but did not see any more useful files there.
+
+It's not so hard to find the right kv-histograms files, at least.  From my notes, I'd expect to see load generators that ran from about 1838Z until about 22:26Z.  Indeed, we have three files named for 18:37Z whose mtimes end at 22:25Z.
+
+Looks like I should write a tool to parse these.  This seems useful but will take some time.  Maybe it's worth updating RFD 110 with my findings so far first.
+
+I spent some time on the tool.  This seems like a custom JSON serialization of HdrHistograms, for which there's a Rust library, but no JSON import (or "snapshot" import) of it.  I looked at the Golang implementation of Import and decided it looked reasonably safe to just try to fill in the fields of the struct directly.  I'm now trying to sanity test the result.
+
+TODO (copied some from yesterday):
+
+* caveat with all of the above: 40-second averages.  Any black hole shorter than that would not be visible.
+* look for any client data to address ^
+** finish tool to dump these histogram files:
+*** add a field for number of operations represented in the histogram.  This would be a good next step to sanity-check correctness
+*** compare what the tool reports for p50/p95/etc against the {1,2,3}.out files
+** if that works out, then write a mode that prints out the information I need for each timestamp and check the output for the tests I ran.  Characterize the result.  This should be the answer I'm looking for.
+* organize screenshots that I took
+* update RFD 110
