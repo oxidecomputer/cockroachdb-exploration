@@ -360,23 +360,19 @@ impl<T: Counter> Histogram<T> {
         let sub_bucket_index = self.sub_bucket_for(value, bucket_index);
 
         debug_assert!(sub_bucket_index < self.sub_bucket_count);
-        debug_assert!(
-            bucket_index == 0
-                || (sub_bucket_index >= self.sub_bucket_half_count)
-        );
+        debug_assert!(bucket_index == 0 || (sub_bucket_index >= self.sub_bucket_half_count));
 
         // Calculate the index for the first entry that will be used in the bucket (halfway through
         // sub_bucket_count). For bucket_index 0, all sub_bucket_count entries may be used, but
         // bucket_base_index is still set in the middle.
-        let bucket_base_index = (i32::from(bucket_index) + 1)
-            << self.sub_bucket_half_count_magnitude;
+        let bucket_base_index =
+            (i32::from(bucket_index) + 1) << self.sub_bucket_half_count_magnitude;
 
         // Calculate the offset in the bucket. This subtraction will result in a positive value in
         // all buckets except the 0th bucket (since a value in that bucket may be less than half
         // the bucket's 0 to sub_bucket_count range). However, this works out since we give bucket 0
         // twice as much space.
-        let offset_in_bucket =
-            sub_bucket_index as i32 - self.sub_bucket_half_count as i32;
+        let offset_in_bucket = sub_bucket_index as i32 - self.sub_bucket_half_count as i32;
 
         let index = bucket_base_index + offset_in_bucket;
         // This is always non-negative because offset_in_bucket is only negative (and only then by
@@ -431,22 +427,15 @@ impl<T: Counter> Histogram<T> {
     pub fn clone_correct(&self, interval: u64) -> Histogram<T> {
         let mut h = Histogram::new_from(self);
         for v in self.iter_recorded() {
-            h.record_n_correct(
-                v.value_iterated_to(),
-                v.count_at_value(),
-                interval,
-            )
-            .expect("Same dimensions; all values should be representable");
+            h.record_n_correct(v.value_iterated_to(), v.count_at_value(), interval)
+                .expect("Same dimensions; all values should be representable");
         }
         h
     }
 
     /// Overwrite this histogram with the given histogram. All data and statistics in this
     /// histogram will be overwritten.
-    pub fn set_to<B: Borrow<Histogram<T>>>(
-        &mut self,
-        source: B,
-    ) -> Result<(), AdditionError> {
+    pub fn set_to<B: Borrow<Histogram<T>>>(&mut self, source: B) -> Result<(), AdditionError> {
         self.reset();
         self.add(source.borrow())
     }
@@ -470,10 +459,7 @@ impl<T: Counter> Histogram<T> {
     /// Add the contents of another histogram to this one.
     ///
     /// Returns an error if values in the other histogram cannot be stored; see `AdditionError`.
-    pub fn add<B: Borrow<Histogram<T>>>(
-        &mut self,
-        source: B,
-    ) -> Result<(), AdditionError> {
+    pub fn add<B: Borrow<Histogram<T>>>(&mut self, source: B) -> Result<(), AdditionError> {
         let source = source.borrow();
 
         // make sure we can take the values in source
@@ -502,13 +488,12 @@ impl<T: Counter> Histogram<T> {
                     // indexing is safe: same configuration as `source`, and the index was valid for
                     // `source`.
                     self.counts[i] = self.counts[i].saturating_add(other_count);
-                    observed_other_total_count = observed_other_total_count
-                        .saturating_add(other_count.as_u64());
+                    observed_other_total_count =
+                        observed_other_total_count.saturating_add(other_count.as_u64());
                 }
             }
 
-            self.total_count =
-                self.total_count.saturating_add(observed_other_total_count);
+            self.total_count = self.total_count.saturating_add(observed_other_total_count);
             let mx = source.max();
             if mx > self.max() {
                 self.update_max(mx);
@@ -538,9 +523,8 @@ impl<T: Counter> Histogram<T> {
                     .count_at_index(i)
                     .expect("index before max must exist");
                 if other_count != T::zero() {
-                    self.record_n(source.value_for(i), other_count).expect(
-                        "Record must succeed; already recorded max value",
-                    );
+                    self.record_n(source.value_for(i), other_count)
+                        .expect("Record must succeed; already recorded max value");
                 }
             }
         }
@@ -580,11 +564,7 @@ impl<T: Counter> Histogram<T> {
         let source = source.borrow();
 
         for v in source.iter_recorded() {
-            self.record_n_correct(
-                v.value_iterated_to(),
-                v.count_at_value(),
-                interval,
-            )?;
+            self.record_n_correct(v.value_iterated_to(), v.count_at_value(), interval)?;
         }
         Ok(())
     }
@@ -628,17 +608,12 @@ impl<T: Counter> Histogram<T> {
                             .checked_sub(&other_count)
                             .ok_or(SubtractionError::SubtrahendCountExceedsMinuendCount)?;
                     } else {
-                        panic!(
-                            "Tried to subtract value outside of range: {}",
-                            other_value
-                        );
+                        panic!("Tried to subtract value outside of range: {}", other_value);
                     }
                 }
 
                 // we might have just set the min / max to have zero count.
-                if other_value <= old_min_highest_equiv
-                    || other_value >= old_max_lowest_equiv
-                {
+                if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
                     needs_restat = true;
                 }
 
@@ -717,10 +692,7 @@ impl<T: Counter> Histogram<T> {
     /// See [`new_with_bounds`] for info on `high` and `sigfig`.
     ///
     /// [`new_with_bounds`]: #method.new_with_bounds
-    pub fn new_with_max(
-        high: u64,
-        sigfig: u8,
-    ) -> Result<Histogram<T>, CreationError> {
+    pub fn new_with_max(high: u64, sigfig: u8) -> Result<Histogram<T>, CreationError> {
         Self::new_with_bounds(1, high, sigfig)
     }
 
@@ -744,11 +716,7 @@ impl<T: Counter> Histogram<T> {
     /// memory at once or if storage is otherwise a concern.
     ///
     /// Returns an error if the provided parameters are invalid; see `CreationError`.
-    pub fn new_with_bounds(
-        low: u64,
-        high: u64,
-        sigfig: u8,
-    ) -> Result<Histogram<T>, CreationError> {
+    pub fn new_with_bounds(low: u64, high: u64, sigfig: u8) -> Result<Histogram<T>, CreationError> {
         // Verify argument validity
         if low < 1 {
             return Err(CreationError::LowIsZero);
@@ -782,8 +750,7 @@ impl<T: Counter> Histogram<T> {
         // that.
         // In [1, 18]. 2^18 > 2 * 10^5 (the largest possible
         // largest_value_with_single_unit_resolution)
-        let sub_bucket_count_magnitude =
-            (f64::from(largest)).log2().ceil() as u8;
+        let sub_bucket_count_magnitude = (f64::from(largest)).log2().ceil() as u8;
         let sub_bucket_half_count_magnitude = sub_bucket_count_magnitude - 1;
         let sub_bucket_count = 1_u32 << u32::from(sub_bucket_count_magnitude);
 
@@ -799,8 +766,7 @@ impl<T: Counter> Histogram<T> {
 
         let sub_bucket_half_count = sub_bucket_count / 2;
         // sub_bucket_count is always at least 2, so subtraction won't underflow
-        let sub_bucket_mask =
-            (u64::from(sub_bucket_count) - 1) << unit_magnitude;
+        let sub_bucket_mask = (u64::from(sub_bucket_count) - 1) << unit_magnitude;
 
         let mut h = Histogram {
             auto_resize: false,
@@ -815,9 +781,7 @@ impl<T: Counter> Histogram<T> {
 
             // Establish leading_zero_count_base, used in bucket_index_of() fast path:
             // subtract the bits that would be used by the largest value in bucket 0.
-            leading_zero_count_base: 64
-                - unit_magnitude
-                - sub_bucket_count_magnitude,
+            leading_zero_count_base: 64 - unit_magnitude - sub_bucket_count_magnitude,
             sub_bucket_half_count_magnitude,
 
             unit_magnitude,
@@ -858,9 +822,7 @@ impl<T: Counter> Histogram<T> {
     }
 
     /// Construct a `Histogram` from a snapshot.
-    pub fn new_from_snapshot(
-        source: &HistogramSnapshot<T>,
-    ) -> Result<Histogram<T>, CreationError> {
+    pub fn new_from_snapshot(source: &HistogramSnapshot<T>) -> Result<Histogram<T>, CreationError> {
         let mut h = Self::new_with_bounds(
             source.lowest_trackable_value,
             source.highest_trackable_value,
@@ -902,11 +864,7 @@ impl<T: Counter> Histogram<T> {
     /// `count` is the number of occurrences of this value to record.
     ///
     /// Returns an error if `value` cannot be recorded; see `RecordError`.
-    pub fn record_n(
-        &mut self,
-        value: u64,
-        count: T,
-    ) -> Result<(), RecordError> {
+    pub fn record_n(&mut self, value: u64, count: T) -> Result<(), RecordError> {
         self.record_n_inner(value, count, false)
     }
 
@@ -923,12 +881,7 @@ impl<T: Counter> Histogram<T> {
         self.record_n_inner(value, count, true).unwrap()
     }
 
-    fn record_n_inner(
-        &mut self,
-        mut value: u64,
-        count: T,
-        clamp: bool,
-    ) -> Result<(), RecordError> {
+    fn record_n_inner(&mut self, mut value: u64, count: T, clamp: bool) -> Result<(), RecordError> {
         let recorded_without_resize = if let Some(c) = self.mut_at(value) {
             *c = (*c).saturating_add(count);
             true
@@ -960,9 +913,7 @@ impl<T: Counter> Histogram<T> {
                     self.highest_equivalent(self.value_for(self.last_index()));
 
                 {
-                    let c = self
-                        .mut_at(value)
-                        .expect("value should fit after resize");
+                    let c = self.mut_at(value).expect("value should fit after resize");
                     // after resize, should be no possibility of overflow because this is a new slot
                     *c = (*c)
                         .checked_add(&count)
@@ -979,11 +930,7 @@ impl<T: Counter> Histogram<T> {
     /// Record a value in the histogram while correcting for coordinated omission.
     ///
     /// See `record_n_correct` for further documentation.
-    pub fn record_correct(
-        &mut self,
-        value: u64,
-        interval: u64,
-    ) -> Result<(), RecordError> {
+    pub fn record_correct(&mut self, value: u64, interval: u64) -> Result<(), RecordError> {
         self.record_n_correct(value, T::one(), interval)
     }
 
@@ -1156,10 +1103,7 @@ impl<T: Counter> Histogram<T> {
     /// );
     /// assert_eq!(perc.next(), None);
     /// ```
-    pub fn iter_linear(
-        &self,
-        step: u64,
-    ) -> HistogramIterator<T, iterators::linear::Iter<T>> {
+    pub fn iter_linear(&self, step: u64) -> HistogramIterator<T, iterators::linear::Iter<T>> {
         iterators::linear::Iter::new(self, step)
     }
 
@@ -1197,11 +1141,7 @@ impl<T: Counter> Histogram<T> {
     /// );
     /// assert_eq!(perc.next(), None);
     /// ```
-    pub fn iter_log(
-        &self,
-        start: u64,
-        exp: f64,
-    ) -> HistogramIterator<T, iterators::log::Iter<T>> {
+    pub fn iter_log(&self, start: u64, exp: f64) -> HistogramIterator<T, iterators::log::Iter<T>> {
         iterators::log::Iter::new(self, start, exp)
     }
 
@@ -1239,9 +1179,7 @@ impl<T: Counter> Histogram<T> {
     /// );
     /// assert_eq!(perc.next(), None);
     /// ```
-    pub fn iter_recorded(
-        &self,
-    ) -> HistogramIterator<T, iterators::recorded::Iter> {
+    pub fn iter_recorded(&self) -> HistogramIterator<T, iterators::recorded::Iter> {
         iterators::recorded::Iter::new(self)
     }
 
@@ -1359,8 +1297,7 @@ impl<T: Counter> Histogram<T> {
         self.iter_recorded().fold(0.0_f64, |total, v| {
             // TODO overflow?
             total
-                + self.median_equivalent(v.value_iterated_to()) as f64
-                    * v.count_at_value().as_f64()
+                + self.median_equivalent(v.value_iterated_to()) as f64 * v.count_at_value().as_f64()
                     / self.total_count as f64
         })
     }
@@ -1373,8 +1310,7 @@ impl<T: Counter> Histogram<T> {
 
         let mean = self.mean();
         let geom_dev_tot = self.iter_recorded().fold(0.0_f64, |gdt, v| {
-            let dev =
-                self.median_equivalent(v.value_iterated_to()) as f64 - mean;
+            let dev = self.median_equivalent(v.value_iterated_to()) as f64 - mean;
             gdt + (dev * dev) * v.count_since_last_iteration() as f64
         });
 
@@ -1458,9 +1394,7 @@ impl<T: Counter> Histogram<T> {
 
         let target_index = self.index_for_or_last(value);
         // TODO use RangeInclusive when it's stable to avoid checked_add
-        let total_to_current_index = (0..target_index
-            .checked_add(1)
-            .expect("usize overflow"))
+        let total_to_current_index = (0..target_index.checked_add(1).expect("usize overflow"))
             .map(|i| self.count_at_index(i).expect("index is <= last_index()"))
             .fold(0_u64, |t, v| t.saturating_add(v.as_u64()));
         total_to_current_index.as_f64() / self.total_count as f64
@@ -1580,8 +1514,7 @@ impl<T: Counter> Histogram<T> {
         // Dividing by sub bucket half count will yield 1 in top half of first bucket, 2 in
         // in the top half (i.e., the only half that's used) of the 2nd bucket, etc, so subtract 1
         // to get 0-indexed bucket indexes. This will be -1 for the bottom half of the first bucket.
-        let mut bucket_index =
-            (index >> self.sub_bucket_half_count_magnitude) as isize - 1;
+        let mut bucket_index = (index >> self.sub_bucket_half_count_magnitude) as isize - 1;
 
         // Calculate the remainder of dividing by sub_bucket_half_count, shifted into the top half
         // of the corresponding bucket. This will (temporarily) map indexes in the lower half of
@@ -1589,10 +1522,9 @@ impl<T: Counter> Histogram<T> {
 
         // The subtraction won't underflow because half count is always at least 1.
         // TODO precalculate sub_bucket_half_count mask if benchmarks show improvement
-        let mut sub_bucket_index =
-            ((index.to_u32().expect("index must fit in u32"))
-                & (self.sub_bucket_half_count - 1))
-                + self.sub_bucket_half_count;
+        let mut sub_bucket_index = ((index.to_u32().expect("index must fit in u32"))
+            & (self.sub_bucket_half_count - 1))
+            + self.sub_bucket_half_count;
         if bucket_index < 0 {
             // lower half of first bucket case; move sub bucket index back
             sub_bucket_index -= self.sub_bucket_half_count;
@@ -1623,8 +1555,7 @@ impl<T: Counter> Histogram<T> {
         // hold a value 2x greater. The mask maps small values to bucket 0.
         // Will not underflow because sub_bucket_mask caps the leading zeros to no more than
         // leading_zero_count_base.
-        self.leading_zero_count_base
-            - (value | self.sub_bucket_mask).leading_zeros() as u8
+        self.leading_zero_count_base - (value | self.sub_bucket_mask).leading_zeros() as u8
     }
 
     /// Compute the position inside a bucket at which the given value should be recorded, indexed
@@ -1867,8 +1798,7 @@ impl<T: Counter> iter::Sum for Histogram<T> {
                 }
                 first
             }
-            None => Histogram::new(3)
-                .expect("histograms with sigfig=3 should always work"),
+            None => Histogram::new(3).expect("histograms with sigfig=3 should always work"),
         }
     }
 }

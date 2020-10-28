@@ -10032,3 +10032,26 @@ TODO (copied some from yesterday):
 ** if that works out, then write a mode that prints out the information I need for each timestamp and check the output for the tests I ran.  Characterize the result.  This should be the answer I'm looking for.
 * organize screenshots that I took
 * update RFD 110
+
+
+== 2020-10-28
+
+Plan for today (see yesterday TODO):
+
+* get chist working / test it
+* characterize client impact during expansion/contraction history based on the client histogram data
+
+I updated chist to include pMax and throughput, which are both contained in the histogram data.  Now that I'm comparing it to the right files, the data matches the output that `cockroach workload` printed.  For example, I compared these two:
+
+[source,text]
+----
+$ chist data/2020-09-30-contraction-grafana-partial/client-data/kv-histograms-2020-09-30T16:42:01Z.out
+
+$ awk 'NR == 1 || $NF == "read"' data/2020-09-30-contraction-grafana-partial/client-data/1.out
+----
+
+and they matched up in elapsed time (within a second), throughput, p50, p95, p99, and pMax (though I only spot-checked).
+
+This is good, but...the server data is a 40-second average and the client data is a 60-second average, so it won't solve that problem.
+
+I decided it would be worth extending "chist" to aggregate data from multiple files.  This seems to work and prints correct output for a single file.  It does have a limitation though that it's potentially aggregating time-buckets that are offset by as much as 30 seconds or so.  It would have helped to have kept these histograms per-second.
