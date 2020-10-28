@@ -2,8 +2,6 @@
  * chist: parse `cockroach workload` histogram files.
  * Reference:
  * https://github.com/cockroachdb/cockroach/blob/master/pkg/workload/histogram/histogram.go
- * This appears to be the implementation used to generate these, but we have not
- * verified that.
  */
 
 use anyhow::Context;
@@ -47,8 +45,10 @@ fn main() -> Result<(), anyhow::Error> {
 
     if command == "summarize" {
         for filename in files {
+            println!("file: {}", filename);
             let records = read_hist_file(Path::new(filename))?;
             do_summarize(records);
+            println!("");
         }
         return Ok(());
     }
@@ -237,7 +237,7 @@ fn read_hist_file(filename: &Path) -> Result<Vec<HistRecord>, anyhow::Error> {
 }
 
 fn do_summarize(records: Vec<HistRecord>) {
-    eprintln!("total records: {}", records.len());
+    println!("total records: {}", records.len());
 
     if records.len() == 0 {
         return;
@@ -259,7 +259,7 @@ fn do_summarize(records: Vec<HistRecord>) {
         set.insert(rec.name.as_str());
     }
 
-    eprintln!("found distinct names: {}", &names.join(", "));
+    println!("found distinct names: {}", &names.join(", "));
 
     let mut which = 0;
     let mut current_timestamp = None;
@@ -268,7 +268,7 @@ fn do_summarize(records: Vec<HistRecord>) {
         if whichname == 0 {
             current_timestamp = Some(rec.now);
         } else if current_timestamp.unwrap() != rec.now {
-            eprintln!(
+            println!(
                 "warning: record {}: expected timestamp {}, found {}",
                 which + 1,
                 current_timestamp.unwrap(),
@@ -279,8 +279,7 @@ fn do_summarize(records: Vec<HistRecord>) {
         let expected = names[which % names.len()];
         which += 1;
         if expected != rec.name {
-            // XXX record number
-            eprintln!(
+            println!(
                 "warning: record {}: expected record with name \"{}\", \
                 found \"{}\"",
                 which + 1,
@@ -290,7 +289,7 @@ fn do_summarize(records: Vec<HistRecord>) {
         }
     }
 
-    eprintln!("initial timestamp: {}", records[0].now.to_rfc3339());
+    println!("initial timestamp: {}", records[0].now.to_rfc3339());
 
     if records.len() > names.len() {
         let next_timestamp = records[names.len()].now;
@@ -300,19 +299,19 @@ fn do_summarize(records: Vec<HistRecord>) {
         let last_duration = last_timestamp - records[0].now;
 
         let ntimestamps = records.len() / names.len();
-        eprintln!("expected distinct timestamps:     {}", ntimestamps);
-        eprintln!(
+        println!("expected distinct timestamps:     {}", ntimestamps);
+        println!(
             "expected time between timestamps: {} ms",
             last_duration.num_milliseconds() / (ntimestamps as i64)
         );
 
-        eprintln!(
+        println!(
             "second  timestamp: {} ({} ms later)",
             next_timestamp.to_rfc3339(),
             next_duration.num_milliseconds()
         );
 
-        eprintln!(
+        println!(
             "final   timestamp: {} ({} ms since start)",
             last_timestamp.to_rfc3339(),
             last_duration.num_milliseconds()
