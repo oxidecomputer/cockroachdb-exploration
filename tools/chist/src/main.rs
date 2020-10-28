@@ -22,14 +22,14 @@ use std::process;
 #[macro_use]
 extern crate anyhow;
 
+const USAGE_MESSAGE: &str = "\
+usage: chist summarize FILE...
+       chist print FILE...
+
+All input files are histogram files from `cockroachdb workload`.";
+
 fn usage() -> ! {
-    eprintln!(
-        "usage: chist summarize FILE...
-                chist print FILE...
-
-        All input files are histogram files from `cockroachdb workload`"
-    );
-
+    eprintln!("{}", USAGE_MESSAGE);
     process::exit(2);
 }
 
