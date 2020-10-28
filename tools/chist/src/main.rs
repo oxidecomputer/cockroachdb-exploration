@@ -56,21 +56,23 @@ fn main() -> Result<(), anyhow::Error> {
             let p50 = histogram.value_at_quantile(0.5) as f64 / 1000000.;
             let p95 = histogram.value_at_quantile(0.95) as f64 / 1000000.;
             let p99 = histogram.value_at_quantile(0.99) as f64 / 1000000.;
+            let pmax = histogram.max() as f64 / 1000000.;
 
-            if line % 10 == 0 {
+            if line == 0 {
                 println!(
-                    "{:35} {:>6} {:>7} {:>7} {:>7}",
-                    "TIME", "ELAPSD", "p50(ms)", "p95(ms)", "p99(ms)"
+                    "{:35} {:>6} {:>7} {:>7} {:>7} {:>7}",
+                    "TIME", "ELAPSD", "p50(ms)", "p95(ms)", "p99(ms)", "pMax",
                 );
             }
 
             println!(
-                "{:35} {:>6.1} {:7.1} {:7.1} {:7.1}",
+                "{:35} {:>6.1} {:7.1} {:7.1} {:7.1} {:7.1}",
                 record.now.to_rfc3339(),
                 t_elapsed as f64 / 1000000000.,
                 p50,
                 p95,
-                p99
+                p99,
+                pmax,
             );
 
             line += 1;
