@@ -53,6 +53,8 @@ fn main() -> Result<(), anyhow::Error> {
             let snapshot = HistogramSnapshot::from(record.hist.clone());
             let histogram = Histogram::new_from_snapshot(&snapshot)
                 .with_context(|| "loading histogram")?;
+            let throughput =
+                histogram.len() as f64 / (record.elapsed as f64 / 1000000000.);
             let p50 = histogram.value_at_quantile(0.5) as f64 / 1000000.;
             let p95 = histogram.value_at_quantile(0.95) as f64 / 1000000.;
             let p99 = histogram.value_at_quantile(0.99) as f64 / 1000000.;
@@ -60,15 +62,22 @@ fn main() -> Result<(), anyhow::Error> {
 
             if line == 0 {
                 println!(
-                    "{:35} {:>6} {:>7} {:>7} {:>7} {:>7}",
-                    "TIME", "ELAPSD", "p50(ms)", "p95(ms)", "p99(ms)", "pMax",
+                    "{:35} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7}",
+                    "TIME",
+                    "ELAPSD",
+                    "OPS/SEC",
+                    "p50(ms)",
+                    "p95(ms)",
+                    "p99(ms)",
+                    "pMax",
                 );
             }
 
             println!(
-                "{:35} {:>6.1} {:7.1} {:7.1} {:7.1} {:7.1}",
+                "{:35} {:>6.1} {:7.1} {:7.1} {:7.1} {:7.1} {:7.1}",
                 record.now.to_rfc3339(),
                 t_elapsed as f64 / 1000000000.,
+                throughput,
                 p50,
                 p95,
                 p99,
