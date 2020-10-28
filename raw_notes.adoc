@@ -10041,6 +10041,8 @@ Plan for today (see yesterday TODO):
 * get chist working / test it
 * characterize client impact during expansion/contraction history based on the client histogram data
 
+=== More analysis from previous testing
+
 I updated chist to include pMax and throughput, which are both contained in the histogram data.  Now that I'm comparing it to the right files, the data matches the output that `cockroach workload` printed.  For example, I compared these two:
 
 [source,text]
@@ -10055,3 +10057,88 @@ and they matched up in elapsed time (within a second), throughput, p50, p95, p99
 This is good, but...the server data is a 40-second average and the client data is a 60-second average, so it won't solve that problem.
 
 I decided it would be worth extending "chist" to aggregate data from multiple files.  This seems to work and prints correct output for a single file.  It does have a limitation though that it's potentially aggregating time-buckets that are offset by as much as 30 seconds or so.  It would have helped to have kept these histograms per-second.
+
+Now I'm looking at the actual data.  I think it would be compelling to plot it.  Here's how I'm generating files:
+
+[source,text]
+----
+$ ../../tools/chist/target/debug/chist print client-data/kv-histograms-2020-09-30T18\:37\:* > chist-1837-2225.out
+$ ../../tools/chist/target/debug/chist print client-data/kv-histograms-2020-09-30T22\:44\:1* > chist-2244-end.out
+$ ls -l
+total 144
+-rw-r--r--  1 dap  staff  33966 Oct 28 14:08 chist-1837-2225.out
+-rw-r--r--  1 dap  staff  36630 Oct 28 14:08 chist-2244-end.out
+lrwxr-xr-x  1 dap  staff     62 Oct 28 14:06 client-data@ -> ../../data/2020-09-30-contraction-grafana-partial/client-data/
+----
+
+Ideally I'd add a mode to chist to combine reads and writes, but for now I'm going to do these separately.  I'll split the data with:
+
+[source,text]
+----
+$ awk 'NR == 1 || $2 == "write"' chist-1837-2225.out > chist-1837-2225-writes.out
+$ awk 'NR == 1 || $2 == "read"' chist-1837-2225.out > chist-1837-2225-reads.out
+$ awk 'NR == 1 || $2 == "read"' chist-2244-end.out > chist-2244-end-reads.out
+$ awk 'NR == 1 || $2 == "write"' chist-2244-end.out > chist-2244-end-writes.out
+----
+
+I want to check for missing data points:
+
+[source,text]
+----
+$ awk '$3 != 3' chist-*.out
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-09-30T22:25:39.647Z  read  2   647.3     4.7    14.2    37.7   453.0
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-09-30T22:25:39.647Z write  2   158.2     6.6    21.0   100.7   604.0
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-09-30T22:25:39.647Z  read  2   647.3     4.7    14.2    37.7   453.0
+2020-09-30T22:25:39.647Z write  2   158.2     6.6    21.0   100.7   604.0
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+----
+
+Just a handful of data points, and they're all at the end of one file.  I'm going to ignore these for now.
+
+Here's how I'm creating separate GNUplot data files for the series I want to plot:
+
+[source,text]
+----
+$ cat chist-1837-2225-reads.out chist-2244-end-reads.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-reads-throughput.out
+$ cat chist-1837-2225-reads.out chist-2244-end-reads.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-reads-pMax-latency.out
+$ cat chist-1837-2225-reads.out chist-2244-end-reads.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-reads-p99-latency.out
+$ cat chist-1837-2225-writes.out chist-2244-end-writes.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-writes-throughput.out
+$ cat chist-1837-2225-writes.out chist-2244-end-writes.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-writes-pMax-latency.out
+$ cat chist-1837-2225-writes.out chist-2244-end-writes.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-writes-p99-latency.out
+
+----
+
+Then I decided to explicitly add a blank line between 22:26Z and 22:44Z so that GNUplot draws a discontinuity.
+
+I created a GNUplot file that produces acceptable graphs.  This is probably enough data collection.  The next step will be to write this up.
+
+=== Set up NVME cluster for more testing
+
+Other action items from RFD 110 are to do a full backup, a rolling upgrade, and a schema upgrade.  For these, I'll need a new cluster.  To make this realistic, it may as well be an NVME cluster.  I may just do another expansion/contraction test, since it doesn't take that long now that I'm familiar enough with it.
+
+To recreate the cluster, I'm going to repeat my steps from 2020-09-29, which is basically to deploy a new NVME-based database cluster with three nodes (will keep "loadgen" and "mon" zones from existing clsuter), then start a load generator like this:
+
+[source,text]
+----
+cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.53:26257/kv?sslmode=disable
+----
+
+I'll let this run until tomorrow morning and see if it's big enough.
+
+When it comes to the expansion/contraction testing, I will probably try a lighter workload in order to see if there's less impact on throughput when latency increases (which is what we'd expect).
+
+
+
+TODO (copied some from yesterday):
+
+* Update RFD 110 with analysis of this test case
+** caveat: server-side data are 40-second averages
+** caveat: client-side data are 60-second averages, potentially mixed across 90-second windows
+** organize the screenshots that I took
+* See PR for more action items
+* Check on cluster growth
