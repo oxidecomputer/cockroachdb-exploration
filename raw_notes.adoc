@@ -10036,10 +10036,12 @@ TODO (copied some from yesterday):
 
 == 2020-10-28
 
-Plan for today (see yesterday TODO):
+Summary of the day (see yesterday TODO):
 
-* get chist working / test it
-* characterize client impact during expansion/contraction history based on the client histogram data
+* got chist working / test it
+* characterized client impact during expansion/contraction history based on the client histogram data -- generated some useful graphs
+* set up new NVME cluster and started filling it up
+* planned backup testing and rolling upgrade testing
 
 === More analysis from previous testing
 
@@ -10121,7 +10123,7 @@ I created a GNUplot file that produces acceptable graphs.  This is probably enou
 
 Other action items from RFD 110 are to do a full backup, a rolling upgrade, and a schema upgrade.  For these, I'll need a new cluster.  To make this realistic, it may as well be an NVME cluster.  I may just do another expansion/contraction test, since it doesn't take that long now that I'm familiar enough with it.
 
-To recreate the cluster, I'm going to repeat my steps from 2020-09-29, which is basically to deploy a new NVME-based database cluster with three nodes (will keep "loadgen" and "mon" zones from existing clsuter), then start a load generator like this:
+To recreate the cluster, I'm going to repeat my steps from 2020-09-29, which is basically to deploy a new NVME-based database cluster with three nodes, then start a load generator like this:
 
 [source,text]
 ----
@@ -10132,13 +10134,130 @@ I'll let this run until tomorrow morning and see if it's big enough.
 
 When it comes to the expansion/contraction testing, I will probably try a lighter workload in order to see if there's less impact on throughput when latency increases (which is what we'd expect).
 
+To keep things simple (I hope), I'm going to use a wholly separate environment than the one I was using before.  I'm doing this from the cockroachdb-testing-round2 clone using assets bucket and Terraform bucket "oxide-cockroachdb-exploration-round2".
 
+The three nvmedb instances' local IPs are .243, .232, and .29.  I'm going to run an instance of this:
 
-TODO (copied some from yesterday):
+[source,text]
+----
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.243:26257/kv?sslmode=disable &
+mv nohup.out bigdb-1.out
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.232:26257/kv?sslmode=disable &
+mv nohup.out bigdb-2.out
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.29:26257/kv?sslmode=disable &
+mv nohup.out bigdb-3.out
+----
 
+The last time I ran this, I let it run 18.5 hours and it reached 73 GiB per node, or 221 GiB altogether.  I started running all this at about 2020-10-28T22:54Z, so I'd expect it to reach this size around 10:30am PT tomorrow.  I'll evaluate in the morning how big it is and if that's big enough.  For my purposes, like before, it probably only needs to be 48 - 72 GiB per node (144-216 GiB overall).
+
+=== Planning more testing
+
+==== Backup/restore
+
+https://www.cockroachlabs.com/docs/stable/backup-and-restore.html#perform-core-backup-and-restore[Cockroach dump]:
+
+[source,text]
+----
+cockroach dump kv | gzip > backup.sql.gz
+----
+
+Import:
+
+[source,text]
+----
+gzcat backup.sql.gz | cockroach sql --database=kv
+----
+
+Could also try S3 import, but it's probably not useful for our purposes:
+
+[source,text]
+----
+cockroach sql --execute="IMPORT PGDUMP 's3://your-external-storage/backup.sql?AWS_ACCESS_KEY_ID=[placeholder]&AWS_SECRET_ACCESS_KEY=[placeholder]'" \
+ <flags>
+----
+
+Notes from https://www.cockroachlabs.com/docs/v20.1/cockroach-dump[`cockroach dump`]:
+
+> If the dump takes longer than the ttlseconds replication setting for the table (25 hours by default), the dump may fail.
+> Reads, writes, and schema changes can happen while the dump is in progress, but will not affect the output of the dump.
+
+Flags that might be useful:
+
+[source,text]
+----
+--as-of TIMESTAMP
+--host ...
+--insecure
+----
+
+For backup, we'll probably want to run this from NVME DB host 192.168.1.243 (nvmedb1):
+
+[source,text]
+----
+nohup bash -c "time cockroach dump kv --insecure --host 192.168.1.243 | gzip > backup-kv.sql.gz" &
+mv nohup.out cockroach_dump.out
+----
+
+To test restore to a second copy, we could run:
+
+[source,text]
+----
+nohup bash -c "time gzcat backup-kv.sql.gz | cockroach sql --insecure --host 192.168.1.243 --database=kv2" &
+mv nohup.out cockroach_restore.out
+----
+
+==== Rolling upgrade
+
+I've obviously got to build a new CockroachDB binary for a new release.  It does not look like they've issued a new release yet.  I could try https://github.com/cockroachdb/cockroach/releases/tag/v20.2.0-rc.3[v20.2.0-rc.3], tagged October 20.  I'll presumably want to build this with garbage-compactor in lennier.  I probably want to build Grafana 7.2, too, but that's less urgent because I'm probably not going to replace the monitoring zone soon, and I don't _need_ the $__rate_interval as long as I use per-second client-side metrics for the next round of analysis.
+
+See https://www.cockroachlabs.com/docs/v20.2/upgrade-cockroach-version.html[rolling upgrade docs] are here.  It's not a given that I can actually do this with the database version that I'm starting with, which is a prerelease.
+
+Policy note to include in RFD: "you must first be on a production release of the previous version. The release does not need to be the latest production release of the previous version, but it must be a production release rather than a testing release (alpha/beta)."
+
+"Finalization" seems to refer to things we call "deferred upgrades".
+
+Basic procedure:
+
+* drain (`svcadm disable` should automatically do this if we have it sending SIGTERM) and stop the process
+* replace the binary
+* start the process again
+* wait at least one minute and repeat for the next nodes
+* if we disabled auto-finalization above, undo that
+
+Review from recent releases:
+
+* breaking changes
+* upgrade finalization features
+
+This broadly seems pretty sane, though.  Unfortunately, to test it, I don't think I'll be able to start with the version that I'm currently using.  Maybe the thing to do is to build copies of v19 and v20, deploy v19, and then do a rolling upgrade to v20.  Alternatively, I could just build v20.2.0-rc.3 (see above), try it, and see what happens!
+
+So the plan will be:
+
+* on lennier, build v20.2.0-rc.3
+* get those binaries into S3 somewhere
+* fetch those binaries onto each of my database nodes
+* rejigger the directory tree on each database node so that I have `.../cockroach/version/{bin/cockroach,lib/...}`, where `version` is a symlink to the current version.  Then create a parallel tree for the second version.  I'll probably want to do all this with CockroachDB offline.  Then bring it up on the old version, let it run for a while under some load, then do the rolling upgrade.
+
+**Take snapshots on all three nodes while they're offline.  That way if the rolling upgrade breaks (since it's not guaranteed to work), I can go back to what I had.**
+
+== Plan for the next day
+
+(includes items copied from yesterday)
+
+* Check on overnight cluster growth.  See below.
+* Check on build of cockroachdb.
+* While waiting for that, plan tests:
+** done (plan only): run full cluster backup under moderate load
+** mostly done (plan only): run rolling upgrade
+** Run schema upgrade
+* When the big cluster is ready:
+** create ZFS snapshots on all three nodes
+** Rerun expansion/contraction tests under load (more fine-grained data, less load)
+** Run full cluster backup under moderate load
+** Run schema upgrade
+** Run rolling upgrade
 * Update RFD 110 with analysis of this test case
 ** caveat: server-side data are 40-second averages
 ** caveat: client-side data are 60-second averages, potentially mixed across 90-second windows
 ** organize the screenshots that I took
 * See PR for more action items
-* Check on cluster growth
