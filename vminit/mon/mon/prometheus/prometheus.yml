@@ -24,7 +24,7 @@ scrape_configs:
             values: [ 'crdb_exploration_nvmedb' ]
 
     relabel_configs:
-    - source_labels: [ __meta_ec2_tag_Role ]
+    - source_labels: [ __meta_ec2_tag_Cluster ]
       target_label: 'cluster'
 
   - job_name: 'grafana'
@@ -32,15 +32,6 @@ scrape_configs:
     scrape_timeout: 5s
     static_configs:
       - targets: [ 'localhost:3000' ]
-
-  - job_name: 'haproxy'
-    scrape_interval: 10s
-    scrape_timeout: 5s
-    ec2_sd_configs:
-      - port: 8404
-        filters:
-          - name: 'tag:Role'
-            values: [ 'crdb_exploration_loadgen' ]
 
   - job_name: 'vm_metrics'
     scrape_interval: 10s
@@ -56,6 +47,8 @@ scrape_configs:
       target_label: 'role'
     - source_labels: [ __meta_ec2_tag_Name ]
       target_label: 'vmname'
+    - source_labels: [ __meta_ec2_tag_Cluster ]
+      target_label: 'cluster'
 
   - job_name: 'illumos_metrics'
     scrape_interval: 10s
@@ -71,3 +64,5 @@ scrape_configs:
       target_label: 'role'
     - source_labels: [ __meta_ec2_tag_Name ]
       target_label: 'vmname'
+    - source_labels: [ __meta_ec2_tag_Cluster ]
+      target_label: 'cluster'

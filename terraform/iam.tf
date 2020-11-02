@@ -5,7 +5,7 @@ resource "aws_iam_instance_profile" "primary" {
 }
 
 resource "aws_iam_role" "primary" {
-  name               = "primary"
+  name               = "primary_cluster_${local.cluster_name}"
   assume_role_policy = <<-EOF
   {
     "Version": "2012-10-17",

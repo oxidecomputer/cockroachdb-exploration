@@ -5,7 +5,8 @@ resource "aws_vpc" "crdb_exploration" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "crdb_exploration"
+    Name    = "crdb_exploration"
+    Cluster = "${local.cluster_name}"
   }
 }
 
@@ -20,7 +21,8 @@ resource "aws_subnet" "crdb_exploration" {
   availability_zone = "us-west-2a"
 
   tags = {
-    Name = "crdb_exploration"
+    Name    = "crdb_exploration"
+    Cluster = "${local.cluster_name}"
   }
 }
 
@@ -28,7 +30,8 @@ resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.crdb_exploration.id
 
   tags = {
-    Name = "crdb_exploration"
+    Name    = "crdb_exploration"
+    Cluster = "${local.cluster_name}"
   }
 }
 

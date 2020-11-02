@@ -6,9 +6,11 @@
 # Configurables
 AWSALIASES_PROJECT="crdb_exploration"
 AWSALIASES_MYKEY="dap-terraform"
+AWSALIASES_CLUSTER="main"
 
 # Derived globals
 AWSALIASES_PROJECT_FILTER="Name=tag:Project,Values=$AWSALIASES_PROJECT"
+AWSALIASES_CLUSTER_FILTER="Name=tag:Cluster,Values=$AWSALIASES_CLUSTER"
 AWSALIASES_MY_FILTER="Name=key-name,Values=$AWSALIASES_MYKEY"
 AWSALIASES_QUERY="Reservations[*].Instances[*].{"
 AWSALIASES_QUERY="${AWSALIASES_QUERY}Name:Tags[?Key=='Name']|[0].Value"
@@ -50,6 +52,7 @@ function list_my_instances {
 function list_project_instances_raw {
 	aws ec2 describe-instances \
 	    --filters "$AWSALIASES_PROJECT_FILTER" \
+	    --filters "$AWSALIASES_CLUSTER_FILTER" \
 	    --query "$AWSALIASES_QUERY" \
 	    --output json \
 	    | json -a

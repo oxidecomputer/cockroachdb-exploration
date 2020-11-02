@@ -1,6 +1,8 @@
 // Copyright 2020 Oxide Computer Company
 
 locals {
+  cluster_name = "main" // "big" cluster, round 3 of testing
+
   // Instance types used for each component.
   db_instance_type      = "m4.large"
   dbnvme_instance_type  = "i3.large"
@@ -8,9 +10,9 @@ locals {
   mon_instance_type     = "t2.medium"
 
   // Count of cluster nodes to create.
-  ndbs = 3
+  ndbs = 0
   // Count of NVME cluster nodes to create.
-  ndbs_nvme = 0
+  ndbs_nvme = 3
 
   // This key should be imported into AWS and loaded into your SSH agent.
   ssh_key_name = "dap-terraform"
@@ -41,13 +43,14 @@ resource "aws_instance" "db" {
     device_name = "sdf"
     volume_size = 60
     volume_type = "io1"
-    iops = 1000
+    iops        = 1000
   }
 
   tags = {
     Project = "crdb_exploration"
     Role    = "crdb_exploration_db"
     Name    = "crdb_exploration_db_${count.index + 1}"
+    Cluster = "${local.cluster_name}"
   }
 
   connection {
@@ -91,6 +94,7 @@ resource "aws_instance" "db_nvme" {
     Project = "crdb_exploration"
     Role    = "crdb_exploration_nvmedb"
     Name    = "crdb_exploration_nvmedb_${count.index + 1}"
+    Cluster = "${local.cluster_name}"
   }
 
   connection {
@@ -192,6 +196,7 @@ resource "aws_instance" "loadgen" {
     Project = "crdb_exploration"
     Role    = "crdb_exploration_loadgen"
     Name    = "crdb_exploration_loadgen_${count.index}"
+    Cluster = "${local.cluster_name}"
   }
 
   connection {
@@ -239,6 +244,7 @@ resource "aws_instance" "mon" {
     Project = "crdb_exploration"
     Role    = "crdb_exploration_mon"
     Name    = "crdb_exploration_mon_${count.index}"
+    Cluster = "${local.cluster_name}"
   }
 
   connection {
@@ -266,11 +272,12 @@ resource "aws_instance" "mon" {
 }
 
 resource "aws_security_group" "crdb_exploration" {
-  name   = "crdb_exploration"
+  name   = "crdb_exploration_${local.cluster_name}"
   vpc_id = aws_vpc.crdb_exploration.id
 
   tags = {
-    Name = "crdb_exploration"
+    Name    = "crdb_exploration"
+    Cluster = "${local.cluster_name}"
   }
 }
 
