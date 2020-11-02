@@ -10240,9 +10240,9 @@ So the plan will be:
 
 **Take snapshots on all three nodes while they're offline.  That way if the rolling upgrade breaks (since it's not guaranteed to work), I can go back to what I had.**
 
-== Plan for the next day
+== 2020-10-29
 
-(includes items copied from yesterday)
+Plan (includes items copied from yesterday):
 
 * Check on overnight cluster growth.  See below.
 * Check on build of cockroachdb.
@@ -10261,3 +10261,364 @@ So the plan will be:
 ** caveat: client-side data are 60-second averages, potentially mixed across 90-second windows
 ** organize the screenshots that I took
 * See PR for more action items
+
+=== Overnight cluster growth
+
+I let this run until 17:52Z.  One of the load generators bombed out here:
+
+[source,text]
+----
+60779.2s        0           30.3           37.2    117.4    234.9    335.5    704.6 write
+60839.2s        0           23.0           37.2    159.4    318.8    604.0   2550.1 write
+Error: ERROR: result is ambiguous (error=unable to dial n3: breaker open [exhausted]) (SQLSTATE 40003)
+----
+
+That appears to have been around 15:48Z, based on the timestamp of the file.  This also reflects when the overall concurrency went down in the cluster and when QPS to one of the nodes went to zero.  Note that CPU utilizationw as 80-100% the whole time, so the system was close to its limits in that way.  I probably should have run this with `--tolerate-errors`.  The load generator in this case was pointed at 192.168.1.29.  I took a brief look at the CockroachDB log for this node at this time and didn't find much.  All of the messages either come from compaction.go or they indicate a new WAL created, which looks routine.  There's very little that looks different for nvmedb3 at that time in terms of CPU usage (which was pegged like the rest), average disk I/O latency, disk or network throughput, etc.  p99 hearbeat latency did see outliers up to 500ms, but it had seen a bit higher previously.  p99 round trip latency did shoot up to _almost_ 5s for some nodes.
+
+Anyway, the database wound up at 70.7 GiB ZFS used per node (3 nodes).  CockroachDB reports 218.7 GiB used and 256 total ranges.  That should be fine for my testing.
+
+Having done this, I'm going to take a ZFS snapshot on each node (while CockroachDB is down).
+
+Two of them came down cleanly with `svcadm disable -s cockroachdb`.  The other one went into maintenance because it was still running after 60 seconds.  Anyway, they're all down now so I can take my snapshot.  I took that with `zfs snapshot tank/cockroachdb@2020-10-29-bigdb`.  (There are no child datasets to worry about.)  Then I enabled all of the cockroachdb instances.  This all happened around 18:10Z.
+
+=== Build of CockroachDB
+
+I did successfully finish a build of CockroachDB v20.2.0-rc.3.illumos (after running into some issues related to some broken changes I had made to garbage-compactor).
+
+=== Testing time
+
+I'm now going to redo the expansion/contraction testing using load generators that are keeping per-second data.  I'm also going to have them target a lower rate of load -- maybe just 1000 total requests per second, or about 333 per load generator.
+
+Based on 9/30's workload, and making a few improvements to the automation and applying this lower target rate, I'm going to do it this way:
+
+[source,text]
+----
+date="$(date +%FT%TZ)"
+for node in 243 232 29; do
+	nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+done
+----
+
+I kicked this off at 18:21:06Z.  I'm going to let this run for a little while before changing anything.  I hope to do expansion/contraction testing this afternoon, and maybe a rolling upgrade.
+
+20:25Z: I'm taking a look at the last two hours.  It's a little strange:
+
+* There have been a fair number of notable dips in throughput.  These have mostly been associated with spikes in latency, especially large p99 spikes.  They've largely been associated with increases in average disk I/O time on nvmedb2, which has had quite a lot of outliers in the tens of milliseconds.  That huge spike is associated with a 140ms *average* disk I/O latency outlier on nvmedb2.
+* The p95 and p99 latency had huge spikes -- up to over 1s -- around 20:06Z.
+* There was also a surge disk bytes read per second on all nodes around 19:30.  This also correlated with a spike in CPU utilization.  This was associated with a spike in GC runs.
+
+It looks like nvmedb2 just has a really crappy disk for some reason.  Although I don't expect any throttling from AWS here, it's conceivable if this system did a lot more IOPS.  Based on the graphs, that doesn't seem to be true.  That said, the sadness from this system appears to have started around 14:32Z -- it was okay for the most part overnight.  That was about the time the count of replicas per node jumped up significantly, from about 162 to about 290.  Some splits happened at that time.  CPU utilization looks about the same as the other systems.  Disk utilization is a fair bit worse, which is consistent with the poor latency.
+
+I would consider throwing away nvmedb2 and replacing it with another system.  That basically looks like an expansion + contraction anyway, so I guess I'll go ahead and do that.
+
+I mentioned this in chat and Bryan wants to take a look so I'm going to hold tight for a bit.
+
+> You can reach the system with `ssh -L3000:192.168.1.209:3000 root@52.24.193.14`.  That will also open up an SSH tunnel if you want to check out the Grafana stats at http://localhost:3000 (username and password both "admin").
+> The data I'm looking at is average I/O latency reported by kstats and averaged by Prometheus over a 40s interval.  I deployed these systems yesterday afternoon, ran a write-heavy workload overnight, and started a mixed workload this morning.  Two of the three nodes have had a max average latency of 2.4ms and 3.4ms.  The other has seen 135ms, with quite a lot of data points in the tens of milliseconds.  The latency outliers started around 13:00Z (6am PT, well before I changed the workload).  That's about the time that performance of the write workload started varying quite a lot more than before and CockroachDB reported a brief spike in p95 from 200ms to 8 *seconds*.  The real reason I noticed is that my mixed read-write workload is also seeing lots of latency spikes that, at least by eye, seem to correlate with average disk I/O latency outliers.
+> It's surprising to me that this node is much worse than the others.
+
+I decided to trace this using this script:
+
+[source,text]
+----
+#pragma D option quiet
+
+BEGIN
+{
+        printf("tracing.\n");
+}
+
+io:::start
+{
+        starts[arg0] = timestamp;
+}
+
+io:::done
+/starts[arg0]/
+{
+        @[args[1]->dev_statname, args[0]->b_flags & B_WRITE ? "write" : "read"] =
+            quantize((timestamp - starts[arg0]) / 1000);
+        starts[arg0] = 0;
+}
+
+tick-10s,END
+{
+        printf("%Y (latency in microseconds)\n", walltimestamp);
+        printa(@);
+        trunc(@);
+}
+----
+
+and I caught data points like this one, showing I/Os between 500ms and 1s, for both read and write:
+
+[source,text]
+----
+2020 Oct 29 21:32:54 (latency in microseconds)
+
+  xdf0                                                write
+           value  ------------- Distribution ------------- count
+             128 |                                         0
+             256 |@@@@                                     7
+             512 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@       66
+            1024 |@@                                       4
+            2048 |                                         0
+
+  blkdev0                                             write
+           value  ------------- Distribution ------------- count
+              16 |                                         0
+              32 |@@@@@@@@@@@@@@@                          1055
+              64 |@@@@@@@@@@@@@@@@@@@@@@@                  1684
+             128 |@                                        101
+             256 |                                         8
+             512 |                                         3
+            1024 |                                         2
+            2048 |                                         1
+            4096 |                                         3
+            8192 |                                         5
+           16384 |                                         17
+           32768 |                                         25
+           65536 |                                         0
+          131072 |                                         3
+          262144 |                                         1
+          524288 |                                         1
+         1048576 |                                         0
+
+  blkdev0                                             read
+           value  ------------- Distribution ------------- count
+              64 |                                         0
+             128 |@@@@@@@@@@@@@@                           877
+             256 |@@@@@@@@@@@@@@@@@@                       1118
+             512 |@                                        64
+            1024 |@                                        34
+            2048 |                                         18
+            4096 |                                         6
+            8192 |@                                        44
+           16384 |@@@@@                                    301
+           32768 |                                         5
+           65536 |                                         5
+          131072 |                                         18
+          262144 |                                         1
+          524288 |                                         7
+         1048576 |                                         0
+----
+
+So the device really is doing this.
+
+Some of these instances are very well correlated with crashes in throughput, as around 21:36:40 to 21:40:20Z.
+
+I'm basically holding these as-is for Bryan to look.
+
+== 2020-10-30
+
+Going to mostly skip CockroachDB for today.  Bryan's going to continue looking at this cluster.  One takeaway from the discussion at the control plane huddle was to use 2xlarge or 4xlarge instances in order to get dedicated NVME hardware to avoid the latency outliers.  Whether I do this or not, I could stand up a new cluster and resume testing in parallel with keeping this one for Bryan to keep looking at.  But it'll take 15+ hours to populate it with data, and I'm not going to be available this weekend even to stop it, so I'm just going to wait til Monday to start this.
+
+== 2020-11-02
+
+Plan for today:
+
+* Working on supporting multiple clusters concurrently.  This is blocked on AWS support to bump a resource limit.  This work is in the -round3 clone of my repo.  Need to make sure I clean up all these resources when I'm done.  (As of 9am PT, there are no resources here because I cleaned them up when I ran into the AWS support issue.)
+* Re-evaluate the cluster that was busted last week.  I/O outliers stopped and performance got more stable.  Let's get more specific.
+* Resume testing, either with a new cluster or the previous nvmedb one.
+** Rerun expansion/contraction tests under load (more fine-grained data, less load)
+** Run full cluster backup under moderate load
+** Run schema upgrade
+** Run rolling upgrade
+* Update RFD 110 with analysis of this test case
+** caveat: server-side data are 40-second averages
+** caveat: client-side data are 60-second averages, potentially mixed across 90-second windows
+** organize the screenshots that I took
+* See PR for more action items
+
+=== Expansion testing
+
+Workload performance stabilized (want to take some notes on this above).  It's been running for several days now.  So I'm going to run an expansion test.
+
+I brought up nvmedb4 at
+
+[source,text]
+----
+root@nvmedb4:~# date +%FT%TZ; svcadm enable -s cockroachdb; date +%FT%TZ
+2020-11-02T17:29:28Z
+2020-11-02T17:29:29Z
+root@nvmedb4:~#
+----
+
+Since I will be out for a little while, and it would be pretty helpful to have results today, I'm going to automate bringup of nvmedb5 in about an hour, using:
+
+[source,text]
+----
+date +%FT%TZ; sleep 3600; date +%FT%TZ; svcadm enable -s cockroachdb; date +%FT%TZ
+----
+
+I ran that at 17:32Z.  The automated one kicked off at 18:32:
+
+[source,text]
+----
+# date +%FT%TZ; sleep 3600; date +%FT%TZ; svcadm enable -s cockroachdb; date +%FT%TZ
+2020-11-02T17:32:09Z
+2020-11-02T18:32:09Z
+2020-11-02T18:32:10Z
+----
+
+At 19:43 or so, I'm going to decommission node 5:
+
+[source,text]
+----
+# date +%FT%TZ; time cockroach node decommission 5 --host 192.168.1.232 --insecure
+2020-11-02T19:44:50Z
+
+  id | is_live | replicas | is_decommissioning |   membership    | is_draining
+-----+---------+----------+--------------------+-----------------+--------------
+   5 |  true   |      123 |        true        | decommissioning |    false
+(1 row)
+...
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+
+real    5m27.341s
+user    0m0.351s
+sys     0m0.355s
+----
+
+I'm going ahead with decommissioning node 4, too:
+
+[source,text]
+----
+# date +%FT%TZ; time cockroach node decommission 4 --host 192.168.1.232 --insecure
+2020-11-02T20:00:19Z
+
+  id | is_live | replicas | is_decommissioning |   membership    | is_draining
+-----+---------+----------+--------------------+-----------------+--------------
+   4 |  true   |      142 |        true        | decommissioning |    false
+(1 row)
+...
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+
+real    9m33.137s
+user    0m0.457s
+sys     0m0.461s
+----
+
+I now have two rounds each of expansion and contraction.  By far, the worst impact was going from 3 -> 4 (the first expansion), where clients saw latencies as high as 3 seconds with no queries completing.  p95: 5ms -> 20-40ms.  p99: 10ms -> 50-125ms.  During contraction, p99 up to 200ms.  (Not clear why the impact in throughput and pMax seemed less for the contraction.)  In all of these, CPU utilization showed moments close to saturation.  Disks never got all that busy and average I/O time was generally good.  Replication did proceed as expected (based on "replicas per node" graphs).  I will try to get some graphs together.
+
+At 20:27:46 I disabled CockroachDB on nodes 4 and 5.
+
+My suspicion at this point is that these boxes were pegged for CPU during that initial window, and that larger VCPU counts won't see this problem.  That might be another experiment worth doing.o
+
+Another experiment worth doing is to just disable one node for 5 minutes and see if we see the same degradation during rebalancing.
+
+I did a similar analysis of the client-side data as I did for the 9/30 data.
+
+First, on the load generator I filtered the historams files to only contain today's data:
+
+[source,text]
+----
+for x in kv-*; do grep 2020-11-02T $x > $x-1102.out; done
+----
+
+Then I tar'ed them up along with the summary files, copied the tarball locally, and untar'ed it (to preserve mtimes).  That went into ./data/2020-11-02-nvme-expansion-contraction.  Locally:
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ mkdir -p analysis/2020-11-02-nvme-expansion-contraction
+dap@zathras cockroachdb-testing-round2 $ cd !$
+cd analysis/2020-11-02-nvme-expansion-contraction
+dap@zathras 2020-11-02-nvme-expansion-contraction $ ln -s ../../data/2020-11-02-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-02-nvme-expansion-contraction $ time chist print client-data/kv-histograms-2* > chist-all.out
+
+real	1m49.973s
+user	1m47.634s
+sys	0m1.908s
+dap@zathras 2020-11-02-nvme-expansion-contraction $ ls -l
+total 22536
+-rw-r--r--  1 dap  staff  10959918 Nov  2 12:43 chist-all.out
+lrwxr-xr-x  1 dap  staff        60 Nov  2 12:38 client-data@ -> ../../data/2020-11-02-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-02-nvme-expansion-contraction $ awk 'NR == 1 || $2 == "write"' chist-all.out > chist-writes.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ awk 'NR == 1 || $2 == "read"' chist-all.out > chist-reads.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ awk '$3 != 3' chist-*.out
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-11-02T20:34:03.018Z  read  2   525.3     2.6     5.2     9.4    12.6
+2020-11-02T20:34:03.018Z write  2   138.8     4.5     9.4    14.7    15.7
+2020-11-02T20:34:04.017Z  read  2   510.7     2.4     5.8    24.1    46.1
+2020-11-02T20:34:04.017Z write  2   132.2     3.9     7.3    41.9    62.9
+2020-11-02T20:34:05.018Z  read  2   516.4     2.2     3.8     4.7    12.6
+2020-11-02T20:34:05.018Z write  2   148.8     3.9     5.5     7.3     7.3
+2020-11-02T20:34:06.017Z  read  2   538.4     2.2     4.2     5.8    11.0
+2020-11-02T20:34:06.017Z write  2   126.1     3.9     6.0     8.9     8.9
+2020-11-02T20:34:07.017Z  read  1   280.1     2.2     4.7    12.1    19.9
+2020-11-02T20:34:07.017Z write  1    53.0     3.7     6.3     9.4     9.4
+2020-11-02T20:34:08.017Z  read  1   256.0     2.1     3.5     5.0    13.6
+2020-11-02T20:34:08.017Z write  1    76.0     3.5     5.0     6.3     6.3
+2020-11-02T20:34:09.018Z  read  1   257.8     2.2     4.5    26.2    39.8
+2020-11-02T20:34:09.018Z write  1    67.9     3.5     5.5    13.6    13.6
+2020-11-02T20:34:10.017Z  read  1   267.3     2.2     4.2     5.5     8.1
+2020-11-02T20:34:10.017Z write  1    67.1     3.5     5.8     7.9     7.9
+2020-11-02T20:34:11.018Z  read  1   267.6     2.4     4.2    14.7    29.4
+2020-11-02T20:34:11.018Z write  1    62.9     3.9     6.3    17.8    17.8
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-11-02T20:34:03.018Z  read  2   525.3     2.6     5.2     9.4    12.6
+2020-11-02T20:34:04.017Z  read  2   510.7     2.4     5.8    24.1    46.1
+2020-11-02T20:34:05.018Z  read  2   516.4     2.2     3.8     4.7    12.6
+2020-11-02T20:34:06.017Z  read  2   538.4     2.2     4.2     5.8    11.0
+2020-11-02T20:34:07.017Z  read  1   280.1     2.2     4.7    12.1    19.9
+2020-11-02T20:34:08.017Z  read  1   256.0     2.1     3.5     5.0    13.6
+2020-11-02T20:34:09.018Z  read  1   257.8     2.2     4.5    26.2    39.8
+2020-11-02T20:34:10.017Z  read  1   267.3     2.2     4.2     5.5     8.1
+2020-11-02T20:34:11.018Z  read  1   267.6     2.4     4.2    14.7    29.4
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+2020-11-02T20:34:03.018Z write  2   138.8     4.5     9.4    14.7    15.7
+2020-11-02T20:34:04.017Z write  2   132.2     3.9     7.3    41.9    62.9
+2020-11-02T20:34:05.018Z write  2   148.8     3.9     5.5     7.3     7.3
+2020-11-02T20:34:06.017Z write  2   126.1     3.9     6.0     8.9     8.9
+2020-11-02T20:34:07.017Z write  1    53.0     3.7     6.3     9.4     9.4
+2020-11-02T20:34:08.017Z write  1    76.0     3.5     5.0     6.3     6.3
+2020-11-02T20:34:09.018Z write  1    67.9     3.5     5.5    13.6    13.6
+2020-11-02T20:34:10.017Z write  1    67.1     3.5     5.8     7.9     7.9
+2020-11-02T20:34:11.018Z write  1    62.9     3.9     6.3    17.8    17.8
+dap@zathras 2020-11-02-nvme-expansion-contraction $ ls -l
+total 43944
+-rw-r--r--  1 dap  staff  10959918 Nov  2 12:43 chist-all.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-reads.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-writes.out
+lrwxr-xr-x  1 dap  staff        60 Nov  2 12:38 client-data@ -> ../../data/2020-11-02-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-reads-throughput.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-reads-pMax-latency.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-reads-p99-latency.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-writes-throughput.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-writes-pMax-latency.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-writes-p99-latency.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ 
+dap@zathras 2020-11-02-nvme-expansion-contraction $ ls -l
+total 70264
+-rw-r--r--  1 dap  staff  10959918 Nov  2 12:43 chist-all.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-reads.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-writes.out
+lrwxr-xr-x  1 dap  staff        60 Nov  2 12:38 client-data@ -> ../../data/2020-11-02-nvme-expansion-contraction/client-data
+-rw-r--r--  1 dap  staff   2211495 Nov  2 12:45 plot-data-reads-p99-latency.out
+-rw-r--r--  1 dap  staff   2220779 Nov  2 12:45 plot-data-reads-pMax-latency.out
+-rw-r--r--  1 dap  staff   2295035 Nov  2 12:45 plot-data-reads-throughput.out
+-rw-r--r--  1 dap  staff   2217896 Nov  2 12:46 plot-data-writes-p99-latency.out
+-rw-r--r--  1 dap  staff   2221103 Nov  2 12:46 plot-data-writes-pMax-latency.out
+-rw-r--r--  1 dap  staff   2294626 Nov  2 12:46 plot-data-writes-throughput.out
+dap@zathras 2020-11-02-nvme-expansion-contraction $ vim gengraphs.gnuplot 
+dap@zathras 2020-11-02-nvme-expansion-contraction $ gnuplot gengraphs.gnuplot 
+dap@zathras 2020-11-02-nvme-expansion-contraction $ ls -l
+total 70480
+-rw-r--r--  1 dap  staff  10959918 Nov  2 12:43 chist-all.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-reads.out
+-rw-r--r--  1 dap  staff   5479996 Nov  2 12:44 chist-writes.out
+lrwxr-xr-x  1 dap  staff        60 Nov  2 12:38 client-data@ -> ../../data/2020-11-02-nvme-expansion-contraction/client-data
+-rw-r--r--  1 dap  staff      1876 Nov  2 12:49 gengraphs.gnuplot
+-rw-r--r--  1 dap  staff     38496 Nov  2 12:49 graph-read-latency.png
+-rw-r--r--  1 dap  staff     22663 Nov  2 12:49 graph-throughput.png
+-rw-r--r--  1 dap  staff     38788 Nov  2 12:49 graph-write-latency.png
+-rw-r--r--  1 dap  staff   2211495 Nov  2 12:45 plot-data-reads-p99-latency.out
+-rw-r--r--  1 dap  staff   2220779 Nov  2 12:45 plot-data-reads-pMax-latency.out
+-rw-r--r--  1 dap  staff   2295035 Nov  2 12:45 plot-data-reads-throughput.out
+-rw-r--r--  1 dap  staff   2217896 Nov  2 12:46 plot-data-writes-p99-latency.out
+-rw-r--r--  1 dap  staff   2221103 Nov  2 12:46 plot-data-writes-pMax-latency.out
+-rw-r--r--  1 dap  staff   2294626 Nov  2 12:46 plot-data-writes-throughput.out
+----
+
+This wasn't as useful as I'd hoped because there are so many more data points than last time.  I'm going to modify it to look only at each individual window.
+
+Looking at the close up graphs, I see that the first expansion involved a 40+ second window in which no queries were completing at all.  p99 and pMax for two seconds after that period were over 47 seconds.  This was from 17:29:57.167Z to 17:30:35.167Z and affected all three clients.  During this time, there was not a ton of I/O, but some CPUs were over 90% utilized (again, 40-second average).  We saw a large spike in distsender errors, including "notleaseholder" and "rpc_sent_nextreplicaerror" and generic "exec_error".  (These are all internal errors.)  Round-trip latency also shot up to a few seconds in some cases.
