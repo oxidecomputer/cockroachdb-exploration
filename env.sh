@@ -7,6 +7,7 @@
 AWSALIASES_PROJECT="crdb_exploration"
 AWSALIASES_MYKEY="dap-terraform"
 AWSALIASES_CLUSTER="main"
+export AWS_PROFILE=oxide-sandbox-dap
 
 # Derived globals
 AWSALIASES_PROJECT_FILTER="Name=tag:Project,Values=$AWSALIASES_PROJECT"
@@ -28,9 +29,10 @@ function run_terraform {
 	if [[ -n "$AWS_PROFILE" ]]; then
 		echo "running terraform under \`aws as-session\`" \
 		    "because AWS_PROFILE is set" >&2
-		exec aws as-session terraform "$@"
+		(cd $AWSALIASES_ROOT/terraform && \
+		    exec aws as-session terraform "$@")
 	else
-		exec terraform "$@"
+		(cd $AWS_ALIASES_ROOT/terraform && exec terraform "$@")
 	fi
 }
 
@@ -139,19 +141,18 @@ function project_ssh {
 # Set up ssh tunnels for key services.
 #
 function start_project_ssh {
-	local mon_internal_ip db_internal_ip any_external_ip
+	local mon_internal_ip nvmedb_internal_ip any_external_ip
 	local terraform_output
 
-	terraform_output="$(cd $AWSALIASES_ROOT/terraform && \
-	    run_terraform output -json \
-	    | json mon_internal_ip.value.0 db_internal_ip.value.0 \
-	      db_external_ip.value.0)"
+	terraform_output="$(run_terraform output -json \
+	    | json mon_internal_ip.value.0 nvmedb_internal_ip.value.0 \
+	      nvmedb_external_ip.value.0)"
 
-	read mon_internal_ip db_internal_ip any_external_ip \
+	read mon_internal_ip nvmedb_internal_ip any_external_ip \
 	    <<< $terraform_output
 	echo "mon internal IP: $mon_internal_ip"
-	echo "db0 internal IP: $db_internal_ip"
-	echo "db0 external IP: $any_external_ip"
+	echo "nvmedb1 internal IP: $nvmedb_internal_ip"
+	echo "nvmedb1 external IP: $any_external_ip"
 	#
 	# Ports:
 	#
@@ -161,7 +162,7 @@ function start_project_ssh {
 	#
 	ports="-L9090:$mon_internal_ip:9090"
 	ports="$ports -L3000:$mon_internal_ip:3000"
-	ports="$ports -L8080:$db_internal_ip:8080"
+	ports="$ports -L8080:$nvmedb_internal_ip:8080"
 	# TODO This option is not secure.
 	options="-o \"StrictHostKeyChecking accept-new\""
 	echo "ssh $options $ports root@$any_external_ip"
