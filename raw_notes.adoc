@@ -10622,3 +10622,527 @@ lrwxr-xr-x  1 dap  staff        60 Nov  2 12:38 client-data@ -> ../../data/2020-
 This wasn't as useful as I'd hoped because there are so many more data points than last time.  I'm going to modify it to look only at each individual window.
 
 Looking at the close up graphs, I see that the first expansion involved a 40+ second window in which no queries were completing at all.  p99 and pMax for two seconds after that period were over 47 seconds.  This was from 17:29:57.167Z to 17:30:35.167Z and affected all three clients.  During this time, there was not a ton of I/O, but some CPUs were over 90% utilized (again, 40-second average).  We saw a large spike in distsender errors, including "notleaseholder" and "rpc_sent_nextreplicaerror" and generic "exec_error".  (These are all internal errors.)  Round-trip latency also shot up to a few seconds in some cases.
+
+I want to retry this with more CPU.  I'm going to bump up the instance types to i3.2xlarge.  To do this, I'm first going to shut down the kv workload runners.  This is 21:43Z.
+
+This turned out to be a big mistake because changing the instance type of a VM destroys any data on the local drive.  So that pushes back any further testing.
+
+At this point, the most useful things I can probably do are:
+
+* finish testing my changes from this morning to support multiple concurrent clusters
+** done: update (hot patch) the Prometheus config in the remaining "mon" zone
+** done: taint and undeploy the NVME database nodes that were destroyed above
+** blocked: deploy a new cluster with a new name.  This is blocked on AWS answering my support mail.
+
+Plan for whenever this becomes unblocked:
+
+* switch to a release version of CockroachDB
+* deploy new cluster with a new name using better instance type
+* consider adding tracing for fsync time
+
+== 2020-11-03
+
+The AWS support case was resolved.  They didn't give me what I asked for, but they gave me enough.
+
+Plan (revised):
+
+* build CockroachDB v20.2.0-rc.4
+** while doing this I ran into a bunch of issues and I'm not positive my build of v20.2.0-rc.3 is correct.
+* update vminit tarball to support multiple CockroachDB versions and include v20.2.0-rc.3 and v20.2.0-rc.3.
+* don't forget to update proto-raw.tgz when I'm done here
+* repair Terraform cluster
+* figure out what workload to run
+** "kv" to build up the cluster?
+* take a ZFS snapshot backup + "cockroach dump" after the database is big enough
+
+=== Repairing cluster
+
+In trying to remove the security group, I see that the two remaining instances (loadgen0 and mon0) are still using it.  They appear to need _some_ security group.  Here's what I'm thinking:
+
+- create a new dummy security group
+- associate these instances with that SG
+- destroy the SG
+- rerun terraform and see what it wants to do.  My hope is that it continues with what it was doing before, including tearing down the VPC, etc.  Try to let it proceed.  I suspect that it will wind up failing in a similar way trying to delete the VPC though.  I can potentially repeat the process.  In both cases, I wonder if it will attach the instances to the correct security group and maybe VPC, then all I'll have to do is remove the dummy ones.
+
+It looks like there's already another security group attached to this VPC -- the default one sg-042c66bef19dfa619.  The one I need to remove is sg-00bcb0d4628a63d0a.
+
+I changed the security group of both Instances to sg-042c66bef19dfa619, then ran Terraform, and it did do what I expected (destroyed the old SG, created a new one, and assigned the instances to it).
+
+=== Cockroach build
+
+I tried to build v20.2.0-rc.4 today.  I ran into a bunch of problems.
+
+When I didn't set my PATH correctly, I ran into what looks like https://github.com/golang/go/issues/32817.  I'm not sure why my PATH would matter for this, as go wasn't in my PATH to begin with.  However, without fixing PATH, I ran into this pretty reliably.  After fixing PATH, I don't.
+
+When I tried to build Cockroach v20.2.0-rc.4:
+
+[source,text]
+----
+...
+github.com/pquerna/cachecontrol
+golang.org/x/crypto/ed25519
+gopkg.in/square/go-jose.v2/cipher
+gopkg.in/square/go-jose.v2/json
+vitess.io/vitess/go/vt/proto/vtgate
+gopkg.in/square/go-jose.v2
+vitess.io/vitess/go/sqltypes
+vitess.io/vitess/go/vt/sqlparser
+github.com/coreos/go-oidc
+gmake: *** [Makefile:1007: cockroach] Error 2
+----
+
+which isn't obvious what went wrong.  When I reran it, I happened to notice this fragment (which also appeared in the first build):
+
+[source,text]
+----
+# github.com/cockroachdb/pebble
+vendor/github.com/cockroachdb/pebble/options.go:573:10: undefined: vfs.WithDiskHealthChecks
+go: downloading golang.org/x/sys v0.0.0-20200824131525-c12d262b63d8
+gmake: *** [Makefile:1007: cockroach] Error 2
+gmake: *** Waiting for unfinished jobs....
+----
+
+This looks like maybe a platform problem.  I believed I had successfully built v20.2.0-rc.3 just recently, so I checked the deltas between the tags, and there was nothing that would seem to change this.  Strange!  Let me double check the binary I had.
+
+Unfortunately, it reports:
+
+[source,text]
+----
+$ ./cockroach-v20.2.0-rc.3/bin/cockroach version
+Build Tag:    4ad5cdf
+Build Time:   2020/10/29 16:15:09
+Distribution: CCL
+Platform:     illumos amd64 (x86_64-pc-solaris2.11)
+Go Version:   go1.14.6
+C Compiler:   gcc 9.3.0
+Build SHA-1:  4ad5cdfec1315c10668c8ca1b3774fef4723f636
+Build Type:   development
+$
+----
+
+That SHA is from the garbage-compactor repo, not CockroachDB.  Where does it come from?  It seems to be in garbage-compactor/cockroach/cache/gopath/src/github.com/cockroachdb/cockroach/pkg/build/info.go, which says:
+
+[source,text]
+----
+// These variables are initialized via the linker -X flag in the
+// top-level Makefile when compiling release binaries.
+tag             = "unknown" // Tag of this build (git describe --tags w/ optional '-dirty' suffix)
+----
+
+Sure enough, the build does something like this:
+
+[source,text]
+----
+GOFLAGS= go build -o cockroach -v  -mod=vendor -tags 'make x86_64_pc_solaris2.11' -ldflags '-X github.com/cockroachdb/cockroach/pkg/build.typ=development -extldflags "" -X "github.com/cockroachdb/cockroach/pkg/build.tag=e4ddb96" -X "github.com/cockroachdb/cockroach/pkg/build.rev=e4ddb9687709beae43f3543ffd01560584b80480" -X "github.com/cockroachdb/cockroach/pkg/build.cgoTargetTriple=x86_64-pc-solaris2.11" -X "github.com/cockroachdb/cockroach/pkg/build.channel=source-archive"  -X "github.com/cockroachdb/cockroach/pkg/build.utcTime=2020/11/03 17:52:52"' ./pkg/cmd/cockroach
+----
+
+This appears to be executed in Makefile at the top of the repo, L1007 right now.  These come from LINKFLAGS, which are set a few lines above.  It looks like you can override these with BUILDINFO_TAG.  They normally come from .buildinfo/{tag,rev}, which are built.
+
+At this point, Josh tells me that he's got a fix for the VFS issue, so I'm going to hang tight on this until I hear from him that it's either working or he could use help.
+
+=== Next steps
+
+Plan (revised):
+
+* blocked: build CockroachDB v20.2.0-rc.4
+* blocked: build CockroachDB v20.2.0-rc.3
+* blocked: update vminit tarball to support multiple CockroachDB versions and include v20.2.0-rc.3 and v20.2.0-rc.3.
+* blocked: don't forget to update proto-raw.tgz when I'm done here
+* blocked: deploy new cluster
+** start with v20.2.0-rc.3
+** load up the database to something large with "kv" workload
+** take a ZFS snapshot backup + "cockroach dump"
+** separate cluster: restore the backup
+** do a rolling upgrade to v20.2.0-rc.4
+
+
+== 2020-11-09
+
+After a few days trying to work through the build (and distracted with other activities), I decided to take Joshua's builds of v20.2.0-rc.3 and v20.2.0-rc.4 and start building a cluster with v20.2.0-rc.3.  I've downloaded these from https://illumos.org/downloads/cockroach-v20.2.0-rc.3.illumos.tar.gz[here] and https://illumos.org/downloads/cockroach-v20.2.0-rc.4.illumos.tar.gz[here].  I've unpacked them into "vminit/cockroachdb/cockroach/bin" as `cockroach-$version` and created a symlink mapping `cockroach` to v20.2.0-rc.3 (so that I can do a rolling upgrade to rc.4 later).  I have _not_ yet updated the proto tarball upstream.  But I'm putting it into use with:
+
+[source,text]
+----
+$ AWS_PROFILE=oxide-sandbox-dap aws s3 cp vminit-cockroachdb.tgz s3://oxide-cockroachdb-exploration-round2/vminit-cockroachdb.tgz
+----
+
+I went ahead and started the "mon" and "loadgen" instances I had before.  I archived the client-side testing data that I had to a tarball on my local machine, then I marked that instance "tainted" in Terraform so that it will replace it in order to ensure that I'm testing with the correct version of the cockroach client.  I ran `terraform apply` to deploy a new cluster.  Unfortunately, enabling CockroachDB on this new cluster blew up with:
+
+[source,text]
+----
+[ Nov 10 00:38:50 Executing start method ("/cockroachdb/bin/cockroach start --insecure --store /cockroachdb/data --listen-addr=192.168.1.228 --join=192.168.1.228,192.168.1.152,192.168.1.172 --background"). ]
+ld.so.1: cockroach-v20.2.0-rc.3: fatal: libstdc++.so.6: version 'GLIBCXX_3.4.26' not found (required by file /cockroachdb/bin/cockroach-v20.2.0-rc.3)
+ld.so.1: cockroach-v20.2.0-rc.3: fatal: libstdc++.so.6: open failed: No such file or directory
+[ Nov 10 00:38:50 Method "start" failed due to signal KILL. ]
+----
+
+This is because I neglected to update the libstdc++.so.6 binary in the vminit tarball from the Cockroach build tarball.  I erroneously assumed that it hadn't changed.  I'm fixing this by copying the libraries out of the RC.4 tarball.  (A less brittle solution would be to create separate trees including both "bin" and "lib" for each separate Cockroach version.  This will require more surgery than I'm prepared to do now and should not be necessary in this case.)
+
+I've built a new vminit tarball and I'm uploading it to S3.  I've also tainted the db_nvme and loadgen instances in Terraform.  I'm going to test the library files to make sure they work.  (They do.)
+
+The new deployment mostly worked.  However, I get a "Not found" screen at http://localhost:8080, which redirects to http://localhost:8080/#/overview.  The other screens seem to work.
+
+Based on 2020-10-28's notes, and the current cluster IPs 192.168.1.52, 192.168.1.159, 192.168.1.43, I'm going to run this on the load generator:
+
+[source,text]
+----
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.52:26257/kv?sslmode=disable &
+mv nohup.out bigdb-1.out
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.159:26257/kv?sslmode=disable &
+mv nohup.out bigdb-2.out
+nohup cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10 --max-block-bytes 1024 --min-block-bytes 1024 postgresql://root@192.168.1.43:26257/kv?sslmode=disable &
+mv nohup.out bigdb-3.out
+----
+
+Based on last time, I'd expect this to take 18-20 hours to reach a useful size.  18 hours will be tomorrow morning around 11:20am PT.
+
+TODO next:
+
+* fix my Grafana dashboard -- the illumos metrics (and maybe other metrics?) need to use `cluster="$cluster"` instead of `role="$cluster"`.
+* once the bigdb workload is done, do a rolling upgrade
+* if it still doesn't work, debug why the Overview screen in Admin UI doesn't work
+* don't forget to update proto-raw.tgz when I'm done here
+
+== 2020-11-10
+
+Plan for the day:
+
+* Check on "bigdb" workload
+* Fix Grafana dashboard
+* Do a rolling upgrade
+* Debug the "Admin UI" Overview screen page problem
+* don't forget to update proto-raw.tgz when I'm done here
+
+=== Fix dashboardGa
+
+I exported the stock dashboard from Grafana and compared it to what's in my repo to make sure there were no unsaved changes.  It looked fine.  Then I ran this in vim over it: `%s/role=\\"\$cluster/cluster=\\"$cluster/gc`.  I couldn't update this in Grafana directly or delete the existing dashboard, so I moved the old dashboard file aside (from /mon/grafana/stock_dashboards) and put the new file in its place, then restarted Grafana.  This seems to have worked.
+
+=== Overnight workload
+
+When I estimated how long this would take, I did not account for these being much larger instances that might get a lot more done in the same time.  After only about 16 hours, we're at about 124 GiB of space per node.  That said, these nodes have 64 GiB of memory, so that's still only 2x DRAM.
+
+There was an unexpected period of several hours from 0700 to 1000 where the latency really shot up and throughput was low.  This was about half an hour after a lot more replicas had been created (lots of splits).  Round-trip latency actually went down during this period, and CPU utilization of the load generators went down.
+
+With the updated dashboard, I can see that CPU utilization, disk average I/O time, disks %busy, disks IOPS and throughput -- they were all down significantly during this period.  So Cockroach was less busy with I/O and CPU, but latency nonetheless went up.  The above is true about the load generators too -- they were more idle in CPU and disk activity.  The active query count reported by CockroachDB did not go down either -- if anything, there were fewer samples with fewer active queries (i.e., there were always active queries).  Queries were pretty balanced by store and by node.
+
+Interestingly, when I look at the CockroachDB KV execution latency @ p99: I see that n1 was gradually getting slower up until about 06:00, where it leveled off.  But the other two nodes were steadily quite quick until right around 07:00Z, when their latency shot up to match n1's.
+
+There was less compaction and flush activity during this period.
+
+One data point of note: the queue processing time for the Raft log rose from about 1s to almost 2s for most of this period, and suddenly went down again after that.  It's really not clear what happened at the beginning or end of this period to cause this.  We might suspect drops in network traffic, but network traffic throughput went down significantly during this period, too.
+
+
+=== Rolling upgrade
+
+To prepare for a rolling upgrade, I'm going to do this:
+
+* shut down load generators
+* shut down CockroachDB
+* save zfs snapshots on all nodes
+* bring up CockroachDB (still on old version)
+* bring up much lighter-level load generators (analogous to what I did during past expansion/contraction testing)
+* run through rolling upgrade
+
+Shutting down load generators:
+
+[source,text]
+----
+root@loadgen0:~/bigdb# fuser bigdb-*
+bigdb-1.out:     1248o
+bigdb-2.out:     1253o
+bigdb-3.out:     1260o
+root@loadgen0:~/bigdb# pargs 1248 1253 1260
+1248:   cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --init
+argv[5]: --concurrency
+argv[6]: 4
+argv[7]: --display-every=60s
+argv[8]: --batch
+argv[9]: 10
+argv[10]: --max-block-bytes
+argv[11]: 1024
+argv[12]: --min-block-bytes
+argv[13]: 1024
+argv[14]: postgresql://root@192.168.1.52:26257/kv?sslmode=disable
+
+1253:   cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --init
+argv[5]: --concurrency
+argv[6]: 4
+argv[7]: --display-every=60s
+argv[8]: --batch
+argv[9]: 10
+argv[10]: --max-block-bytes
+argv[11]: 1024
+argv[12]: --min-block-bytes
+argv[13]: 1024
+argv[14]: postgresql://root@192.168.1.159:26257/kv?sslmode=disable
+
+1260:   cockroach workload run kv --init --concurrency 4 --display-every=60s --batch 10
+argv[0]: cockroach
+argv[1]: workload
+argv[2]: run
+argv[3]: kv
+argv[4]: --init
+argv[5]: --concurrency
+argv[6]: 4
+argv[7]: --display-every=60s
+argv[8]: --batch
+argv[9]: 10
+argv[10]: --max-block-bytes
+argv[11]: 1024
+argv[12]: --min-block-bytes
+argv[13]: 1024
+argv[14]: postgresql://root@192.168.1.43:26257/kv?sslmode=disable
+root@loadgen0:~/bigdb# kill 1248 1253 1260
+root@loadgen0:~/bigdb# date
+November 10, 2020 at 04:28:27 PM UTC
+----
+
+Then I shut down CockroachDB on all three instances.  It timed out after 60s on nvmedb3.  On all three I took a snapshot with `zfs snapshot tank/cockroachdb@2020-11-10-0-before-upgrade`.  Then I started up CockroachDB again.  The cluster looks healthy and I've confirmed that it's on v20.2.0-RC.3.
+
+I'm going to start a light workload with this script:
+
+[source,text]
+----
+#!/bin/bash
+
+date="$(date +%FT%TZ)"
+for node in 52 159 43; do
+        nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+done
+----
+
+I started this at 2020-11-10T16:40:09.  I'm going to let this run for a little while, then begin the rolling upgrade process.  Using https://www.cockroachlabs.com/docs/v20.2/upgrade-cockroach-version.html[docs here].
+
+Returning to this at 23:00Z.  Upgrade steps from the doc above:
+
+* version: it's not totally obvious that this should work from v20.2.0-RC.3 to v20.2.0-RC.4, but I'd expect it to work.
+* load balancing: not an issue -- load generators talking directly to db nodes and they will see impact.  Understood.
+* node status / replication status: I can't directly check this because of the Admin UI issue.  However, the Metrics page shows a summary with 0 unavailable ranges and 3 total nodes and no warnings about suspect or dead nodes.  My Grafana dashboard shows 0 under-replicated ranges, too.
+* node list: can't easily check node list because of the above Admin UI issue but there are plenty of CPU, memory, and disk resources available and everything should be on RC.3.
+* breaking changes: none in this RC and none that should affect us
+* ongoing bulk operations: no bulk imports or schema changes in progress.  No jobs shown.
+* finalization: going to let it do this automatically.
+* the upgrade itself.  for each node:
+** drain and stop the node with SIGTERM followed by SIGKILL after 60 seconds. (`svcadm disable -s cockroachdb`)
+** replace binary
+** start the cluster again (`svcadm enable -s cockroachdb`)
+** verify that the node is back online and part of the cluster (e.g., through log)
+** verify SQL connectivity
+** wait at least 1 minute before moving on to the next one
+
+First node:
+
+[source,text]
+----
+root@nvmedb1:/cockroachdb/bin# ls -l
+total 514444
+lrwxrwxrwx   1 cockroachdb staff         22 Nov 10 01:00 cockroach -> cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+root@nvmedb1:/cockroachdb/bin# date +%FT%TZ; time svcadm disable -s cockroachdb
+2020-11-10T23:13:24Z
+
+real    0m2.869s
+user    0m0.007s
+sys     0m0.020s
+root@nvmedb1:/cockroachdb/bin# ln -s -f cockroach-v20.2.0-rc.4 cockroach
+root@nvmedb1:/cockroachdb/bin# ls -l
+total 514444
+lrwxrwxrwx   1 root     root          22 Nov 10 23:13 cockroach -> cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+root@nvmedb1:/cockroachdb/bin# time svcadm enable -s cockroachdb; date +%FT%TZ
+
+real    0m1.498s
+user    0m0.008s
+sys     0m0.023s
+2020-11-10T23:13:55Z
+root@nvmedb1:/cockroachdb/bin# date -u
+November 10, 2020 at 11:14:55 PM GMT
+----
+
+Second node: I tried to automate this one but it timed out during shut down and required me to intervene:
+
+[source,text]
+----
+root@nvmedb2:/cockroachdb/bin# ls -l && date +%FT%TZ && time svcadm disable -s cockroachdb && ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
+total 514446
+lrwxrwxrwx   1 cockroachdb staff         22 Nov 10 01:00 cockroach -> cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+2020-11-10T23:15:54Z
+^C
+real    1m36.908s
+user    0m0.011s
+sys     0m0.030s
+
+root@nvmedb2:/cockroachdb/bin# ls -l; ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
+total 514446
+lrwxrwxrwx   1 cockroachdb staff         22 Nov 10 01:00 cockroach -> cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+total 514446
+lrwxrwxrwx   1 root     root          22 Nov 10 23:17 cockroach -> cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+svcadm: Instance "svc:/application/cockroachdb:default" is in maintenance state.
+
+real    0m0.060s
+user    0m0.006s
+sys     0m0.018s
+2020-11-10T23:17:47Z
+root@nvmedb2:/cockroachdb/bin# svcadm clear cockroachdb
+root@nvmedb2:/cockroachdb/bin# svcs cockroachdb
+STATE          STIME    FMRI
+online         23:17:54 svc:/application/cockroachdb:default
+----
+
+Last node (had a false start in here):
+
+[source,text]
+----
+root@nvmedb3:~# svcs cockroachdb
+STATE          STIME    FMRI
+online         16:35:28 svc:/application/cockroachdb:default
+root@nvmedb3:~# ls -l && date +%FT%TZ && time svcadm disable -s cockroachdb && ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
+total 0
+2020-11-10T23:19:26Z
+^C
+real    1m13.367s
+user    0m0.010s
+sys     0m0.027s
+
+root@nvmedb3:~# tail $(svcs -L cockroachdb)
+* consider --accept-sql-without-tls instead. For other options, see:
+*
+* - https://go.crdb.dev/issue-v/53404/v20.2
+* - https://www.cockroachlabs.com/docs/v20.2/secure-a-cluster.html
+*
+[ Nov 10 16:35:28 Method "start" exited with status 0. ]
+[ Nov 10 23:19:26 Stopping because service disabled. ]
+[ Nov 10 23:19:26 Executing stop method (:kill). ]
+initiating graceful shutdown of server
+[ Nov 10 23:20:26 Method or service exit timed out.  Killing contract 4190. ]
+root@nvmedb3:~# svcs cockroachdb
+STATE          STIME    FMRI
+maintenance    23:20:26 svc:/application/cockroachdb:default
+root@nvmedb3:~# svcadm clear cockroachdb
+root@nvmedb3:~# svcs cockroachdb
+STATE          STIME    FMRI
+disabled       23:21:00 svc:/application/cockroachdb:default
+root@nvmedb3:~# ls -l && date +%FT%TZ && time svcadm disable -s cockroachdb && ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
+total 0
+2020-11-10T23:21:08Z
+
+real    0m0.060s
+user    0m0.006s
+sys     0m0.018s
+total 1
+lrwxrwxrwx   1 root     root          22 Nov 10 23:21 cockroach -> cockroach-v20.2.0-rc.4
+
+real    0m0.471s
+user    0m0.007s
+sys     0m0.021s
+okay
+2020-11-10T23:21:08Z
+root@nvmedb3:~# ls -l
+total 1
+lrwxrwxrwx   1 root     root          22 Nov 10 23:21 cockroach -> cockroach-v20.2.0-rc.4
+root@nvmedb3:~# rm -f cockroach
+root@nvmedb3:~# cd /cockroachdb/bin/
+root@nvmedb3:/cockroachdb/bin# ls -l
+total 514442
+lrwxrwxrwx   1 cockroachdb staff         22 Nov 10 01:00 cockroach -> cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+root@nvmedb3:/cockroachdb/bin# ls -l && date +%FT%TZ && time svcadm disable -s cockroachdb && ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
+total 514442
+lrwxrwxrwx   1 cockroachdb staff         22 Nov 10 01:00 cockroach -> cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+2020-11-10T23:21:35Z
+
+real    0m2.558s
+user    0m0.007s
+sys     0m0.020s
+total 514442
+lrwxrwxrwx   1 root     root          22 Nov 10 23:21 cockroach -> cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff    337463488 Nov  6 22:02 cockroach-v20.2.0-rc.3
+-rwxr-xr-x   1 cockroachdb staff    337463824 Nov  3 22:57 cockroach-v20.2.0-rc.4
+-rwxr-xr-x   1 cockroachdb staff        552 Oct 28 22:25 configure_cluster
+-rwxr-xr-x   1 cockroachdb staff        576 Oct 28 22:25 configure_haproxy
+-rwxr-xr-x   1 cockroachdb staff    17089752 Sep  1 15:21 haproxy
+
+real    0m0.935s
+user    0m0.007s
+sys     0m0.022s
+okay
+2020-11-10T23:21:38Z
+----
+
+This seems to have worked so far.  The dashboard issue is not fixed.  Will want to review the client data at some point.
+
+
+=== Admin UI (DB Console) Overview page missing
+
+I get a "page not found" error when I go to the Overview page on both v20.2.0-RC.3 and v20.2.0-RC.4.  I see this in Chrome, Firefox, and Safari.  I see one error in the console in both, but it looks related to parsing a font.
+
+I spent some time trying to debug the JavaScript, but it appears to be both obfuscated and minified, so that's pretty hard.  I suspect a few possible things:
+
+- some build problem that failed to include some important file but due to some bug was not fatal to the build
+- this is accidentally not included in a `buildoss` build
+- maybe a problem with gitattributes, if it's related to the error on the font and if that's related to git's mishandling of a binary file
+
+The error on the font is:
+
+[source,text]
+----
+Failed to decode downloaded font: http://localhost:8080/d9db862be7068cd30e3fe1c09b2f3931.woff2
+OTS parsing error: invalid version tag
+----
+
+I've asked Josh about getting a build log to see if something went wrong during the build.  I will also reach out to the community tomorrow, either via Slack or an issue.
+
+
+=== Wrap up for the day
+
+I'm going to shut down the load generators.  This happened around 2020-11-11T00:09Z.
+
+Plan for next:
+
+* debug/fix admin ui problem
+* looking at rolling upgrade client-side data
+* don't forget to update proto-raw.tgz when I'm done here
+* expansion test?
+* kick off backup
+* test restore
