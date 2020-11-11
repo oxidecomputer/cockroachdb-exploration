@@ -873,7 +873,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "(SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname)) / 1000  ",
+          "expr": "(SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"user\"}[30s])) BY (vmname) + SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname)) / 1000  ",
           "interval": "",
           "legendFormat": "{{vmname}}",
           "refId": "A"
@@ -973,7 +973,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "(SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu)) / (SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{role=\"$cluster\",mode=\"idle\"}[30s])) BY (vmname, cpu))  ",
+          "expr": "(SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu)) / (SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"user\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"kernel\"}[30s])) BY (vmname, cpu) + SUM(rate(node_cpu_seconds_total{cluster=\"$cluster\",mode=\"idle\"}[30s])) BY (vmname, cpu))  ",
           "interval": "",
           "legendFormat": "{{vmname}} cpu {{cpu}}",
           "refId": "A"
@@ -1072,7 +1072,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rlentime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_rlentime_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1170,7 +1170,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_rtime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/1000000000",
+          "expr": "irate(kstat_disk_rtime_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/1000000000",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1269,7 +1269,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\",role=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nwritten_total{disk!=\"rpool\",cluster=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1367,7 +1367,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_nread_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_nread_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1465,7 +1465,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\",role=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_writes_total{disk!=\"rpool\",cluster=\"$cluster\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1563,7 +1563,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
+          "expr": "irate(kstat_disk_reads_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1661,7 +1661,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_link_obytes64_total{role=\"$cluster\"}[$rate_interval])",
+          "expr": "irate(kstat_link_obytes64_total{cluster=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{vmname}} {{device}}",
           "refId": "A"
@@ -1760,7 +1760,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_link_rbytes64_total{role=\"$cluster\"}[$rate_interval])",
+          "expr": "irate(kstat_link_rbytes64_total{cluster=\"$cluster\"}[$rate_interval])",
           "interval": "",
           "legendFormat": "{{vmname}} {{device}}",
           "refId": "A"
@@ -1858,7 +1858,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "kstat_disk_rcnt{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}",
+          "expr": "kstat_disk_rcnt{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
@@ -1954,7 +1954,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "irate(kstat_disk_wlentime_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{role=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
+          "expr": "irate(kstat_disk_wlentime_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])/(irate(kstat_disk_reads_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval])+irate(kstat_disk_writes_total{cluster=\"$cluster\",disk!=\"rpool\",disk!=\"tank\"}[$rate_interval]))",
           "interval": "",
           "legendFormat": "{{disk}} {{vmname}}",
           "refId": "A"
