@@ -11146,3 +11146,82 @@ Plan for next:
 * expansion test?
 * kick off backup
 * test restore
+
+== 2020-11-11
+
+Josh root-caused the problem with the Overview screen last night and built a fix this morning.  My plan for the day:
+
+* apply and verify this fix
+* kick off `cockroach dump` of "kv" database
+* submit a PR to Cockroach
+
+Next time, I'll do:
+
+* expansion test?
+* kick off distributed backup
+* test restore
+* look at rolling upgrade client-side data
+* don't forget to update proto-raw.tgz when I'm done here
+
+=== Console fix
+
+I submitted a https://github.com/cockroachdb/cockroach/pull/56591[PR with Josh's fix to CockroachDB].  I got Bryan's permission to sign the CLA on our behalf.
+ 
+=== `cockroach dump`
+
+I'm arbitrarily going to do this on nvmedb1.  The database is using 131 GiB and the pool has another 1.5 TiB, so I'm not worried about disk space.
+
+I ran this with:
+
+[source,text]
+----
+$ nohup /cockroachdb/bin/cockroach dump --url postgresql://root@192.168.1.52:26257/?sslmode=disable kv > cockroach-dump.out 2> cockroach-dump.err
+----
+
+Some notes about the setup:
+
+* CockroachDB v20.2.0, still illumos
+* 3-node cluster in AWS using i3.2xlarge instance types (local NVME, 8 CPUs, 61 GiB of memory)
+* local storage: 1769 GiB (for the CockroachDB pool, being used for both the database and the backup file).  Separate pool for root filesystem
+* No client workload going on at all
+* 308 total replicas, 383 GiB (entire cluster).  381.6 GiB in 272 ranges ("kv" database).
+
+This appears to have run from 2020-11-11T22:04:26.527958311 to 2020-11-11T22:37:49.135255832 and produced 81 GiB of data.  I expected more like 127 GiB.  I'm not sure why it's different.  It's possible that there's some fragmentation?  Or some overwritten values?  I could try tuning down the "gc" interval.
+
+XXX new open question: is there a way to see how much data is to-be-GC'd?
+
+As a sanity check:
+
+[source,text]
+----
+$ wc cockroach-dump.out
+ 44637940 90151145 87348554912 cockroach-dump.out
+
+...
+
+root@192.168.1.159:26257/kv> select count(*) from kv;
+   count
+------------
+  43762680
+(1 row)
+
+Time: 192.303s total (execution 192.303s / network 0.001s)
+
+root@192.168.1.159:26257/kv>
+----
+
+That's _nearly_ the same number of total rows.  The dump has an extra 875,000 lines for some reason.  This shouldn't happen because there was no workload running.
+
+It looks like the dump has an INSERT INTO line every 100 lines or so, plus an extra blank line there.  So that might inflate things by about 2% of the real value.  If we add 2% to the `select count(*)` number, we get within 7 of the `wc` number -- that sounds good (and there are 6 lines up front for schema, too).  I confirmed that there are 437627 "INSERT INTO" lines.  With associated blank lines, that's 875254, which is the difference above.
+
+=== Plan for next
+
+* copy the backup file to S3 so I can reuse it
+* check on CockroachDB PR
+* expansion test?
+* kick off distributed backup
+* test restore
+** cockroach dump
+** distributed backup
+* look at rolling upgrade client-side data
+* don't forget to update proto-raw.tgz when I'm done here
