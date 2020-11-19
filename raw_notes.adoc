@@ -10978,6 +10978,8 @@ November 10, 2020 at 11:14:55 PM GMT
 
 Second node: I tried to automate this one but it timed out during shut down and required me to intervene:
 
+WARN: See notes on 11/19.  nvmedb2 and nvmedb3 are backwards here.
+
 [source,text]
 ----
 root@nvmedb2:/cockroachdb/bin# ls -l && date +%FT%TZ && time svcadm disable -s cockroachdb && ln -s -f cockroach-v20.2.0-rc.4 cockroach && ls -l && time svcadm enable -s cockroachdb && echo okay; date +%FT%TZ
@@ -11022,6 +11024,8 @@ online         23:17:54 svc:/application/cockroachdb:default
 ----
 
 Last node (had a false start in here):
+
+WARN: See notes on 11/19.  nvmedb2 and nvmedb3 are backwards here.
 
 [source,text]
 ----
@@ -13684,10 +13688,90 @@ root@nvmedb1:/cockroachdb# echo $?
 
 That seems to have worked.  I have not checked the zip file contents yet.
 
+=== Analyzing rolling upgrade data
+
+This testing was done on 11/11.  Timeline:
+
+[source,text]
+----
+2020-11-10T16:40:09Z workload started
+2020-11-10T23:13:24Z upgrade node 1 started (finished at 23:13:55Z)
+2020-11-10T23:15:54Z upgrade node 2 started (finished at 23:17:54Z)*
+2020-11-10T23:19:26Z upgrade node 3 started (finished at 23:21:38Z)*
+----
+
+I think it would be fair to look at just 23:00 to 23:30Z.  Filtering at the load generator side:
+
+[source,text]
+----
+grep T23:[012] kv-histograms-159-2020-11-10T16\:40\:09Z.out > kv-histograms-159-trimmed.out
+grep T23:[012] kv-histograms-43-2020-11-10T16\:40\:09Z.out > kv-histograms-43-trimmed.out
+grep T23:[012] kv-histograms-52-2020-11-10T16\:40\:09Z.out> kv-histograms-52-trimmed.out
+----
+
+Note too that n1 = .52, n2 = .43, and n3 = .159.
+
+I copied these files locally and did a similar analysis as for other client data sets, but I changed it because we're not so worried about overall throughput and latency but errors and latency, so I thought it would be helpful to plot the different clients' activities together.
+
+I will plot:
+
+* a graph of latency:
+** series 1: pMax for client pointed at n1
+** series 2: pMax for client pointed at n2
+** series 3: pMax for client pointed at n3
+* a graph of throughput:
+** series 1: throughput for client pointed at n1
+** series 2: throughput for client pointed at n2
+** series 3: throughput for client pointed at n3
+* a graph of errors (not sure how to produce this usefully yet)
+** series 1: errors for client pointed at n1
+** series 2: errors for client pointed at n2
+** series 3: errors for client pointed at n3
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ mkdir analysis/2020-11-11-rolling-upgrade
+dap@zathras cockroachdb-testing-round2 $ cd !$
+cd analysis/2020-11-11-rolling-upgrade
+dap@zathras 2020-11-11-rolling-upgrade $ ln -s ../../data/2020-11-11-rolling-upgrade/client-data
+dap@zathras 2020-11-11-rolling-upgrade $ ~/oxide/cockroachdb-testing/tools/chist/target/debug/chist print client-data/kv-histograms-52-trimmed.out > chist-n1.out
+dap@zathras 2020-11-11-rolling-upgrade $ ~/oxide/cockroachdb-testing/tools/chist/target/debug/chist print client-data/kv-histograms-43-trimmed.out > chist-n2.out
+dap@zathras 2020-11-11-rolling-upgrade $ ~/oxide/cockroachdb-testing/tools/chist/target/debug/chist print client-data/kv-histograms-159-trimmed.out > chist-n3.out
+dap@zathras 2020-11-11-rolling-upgrade $ ls -l
+total 1584
+-rw-r--r--  1 dap  staff  266474 Nov 19 14:20 chist-n1.out
+-rw-r--r--  1 dap  staff  266474 Nov 19 14:20 chist-n2.out
+-rw-r--r--  1 dap  staff  266474 Nov 19 14:21 chist-n3.out
+lrwxr-xr-x  1 dap  staff      49 Nov 19 14:16 client-data@ -> ../../data/2020-11-11-rolling-upgrade/client-data
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "write"' chist-n1.out > chist-n1-writes.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "read"' chist-n1.out > chist-n1-reads.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "write"' chist-n2.out > chist-n2-writes.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "write"' chist-n3.out > chist-n3-writes.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "read"' chist-n2.out > chist-n2-reads.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk 'NR == 1 || $2 == "read"' chist-n3.out > chist-n3-reads.out
+dap@zathras 2020-11-11-rolling-upgrade $ join plot-n1-read-throughput.out plot-n1-write-throughput.out > plot-n1-throughput.out
+dap@zathras 2020-11-11-rolling-upgrade $ join plot-n2-read-throughput.out plot-n2-write-throughput.out > plot-n2-throughput.out
+dap@zathras 2020-11-11-rolling-upgrade $ join plot-n3-read-throughput.out plot-n3-write-throughput.out > plot-n3-throughput.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n1-reads.out > plot-n1-read-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n2-reads.out > plot-n2-read-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n3-reads.out > plot-n3-read-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n3-writes.out > plot-n3-write-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n2-writes.out > plot-n2-write-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $7 }' chist-n1-writes.out > plot-n1-write-p99.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n1-reads.out > plot-n1-read-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n2-reads.out > plot-n2-read-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n3-reads.out > plot-n3-read-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n3-writes.out > plot-n3-write-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n2-writes.out > plot-n2-write-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $ awk '$1 != "TIME"{ print $1, $8 }' chist-n1-writes.out > plot-n1-write-pMax.out
+dap@zathras 2020-11-11-rolling-upgrade $
+----
+
+IMPORTANT: I learned while writing this up that the bash prompt for nvmedb2 and nvmedb3 (and the AWS instance labels) are inconsistent with the CockroachDB node names -- they're backwards (n3 and n2, respectively).  What a pain.
+
 === TODO next
 
 * new "testing details" doc for RFD 110:
-** rolling upgrade client-side data and update RFD
 ** take a look at the "debug zip" that I created
 * update RFD 110 with changes from new round of testing
 * try a restore from the "cockroach dump" that I created (and update RFD)
