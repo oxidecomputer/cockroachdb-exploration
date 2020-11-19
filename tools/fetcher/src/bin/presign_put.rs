@@ -5,7 +5,7 @@
 
 use anyhow::Context;
 use rusoto_core::Region;
-use rusoto_credential::InstanceMetadataProvider;
+use rusoto_credential::DefaultCredentialsProvider;
 use rusoto_credential::ProvideAwsCredentials;
 use rusoto_s3::util::PreSignedRequest;
 use rusoto_s3::util::PreSignedRequestOption;
@@ -27,7 +27,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let bucket = args[1].clone();
     let key = args[2].clone();
     let region = Region::UsWest2;
-    let provider = InstanceMetadataProvider::new();
+    let provider = DefaultCredentialsProvider::new().with_context(|| "cred provider")?;
 
     let put_request = PutObjectRequest {
         bucket,
