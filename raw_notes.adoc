@@ -10812,7 +10812,7 @@ Plan for the day:
 * Debug the "Admin UI" Overview screen page problem
 * don't forget to update proto-raw.tgz when I'm done here
 
-=== Fix dashboardGa
+=== Fix dashboard
 
 I exported the stock dashboard from Grafana and compared it to what's in my repo to make sure there were no unsaved changes.  It looked fine.  Then I ran this in vim over it: `%s/role=\\"\$cluster/cluster=\\"$cluster/gc`.  I couldn't update this in Grafana directly or delete the existing dashboard, so I moved the old dashboard file aside (from /mon/grafana/stock_dashboards) and put the new file in its place, then restarted Grafana.  This seems to have worked.
 
@@ -11224,4 +11224,2473 @@ It looks like the dump has an INSERT INTO line every 100 lines or so, plus an ex
 ** cockroach dump
 ** distributed backup
 * look at rolling upgrade client-side data
+* don't forget to update proto-raw.tgz when I'm done here
+
+== 2020-11-13
+
+* The CockroachDB PR was merged.
+
+=== Copying the backup file to S3
+
+I spent some time trying to copy the cockroach-dump.out backup file from nvmedb 1 into S3 for future use.  This is surprisingly painful.
+
+* I can't easily use the AWS CLI to copy it because the AWS CLI does not even have setup instructions for anything other than Docker, Linux, MacOS, or Windows.
+* I can't easily create a presigned PUT URL to upload it with curl because the AWS CLI does not generate presigned URLs for anything other than GET requests.
+* I wrote a little program to generate a presigned PUT URL, but now I can't complete the upload because only 5 GiB can be uploaded in a single object without using multi-part uploads.
+* I started trying to copy it through my laptop, but this is going to suck.  Being 80 GiB, and while I was getting almost 100 Mbit at first, I'm only getting about 30 Mbps now and I only have 6 Mbps upstream, so this is no good.
+* I considered splitting into N 5 GiB files.  This would be annoying, both up front and when downloading it in the future.
+* I'm now considering provisioning an Amazon Linux VM solely for copying data.  This was incredibly slow -- I think I provisioned way too small an instance.
+* Josh got back to me with https://gist.github.com/jclulow/06c0e9ed8bd18ff3efed0371c831b919[instructions] for installing the AWS CLI on illumos.  This would be a better investment of time.  I tried this on nvmedb1, but its root filesystem wasn't large enough for the build-essential install.  I then started doing this on "mon" before deciding it makes more sense to do this in lennier, my build VM.  However, that VM needs much more space to store the database dump.  I bumped up its volume size and also made the instance type bigger while I was at it.  I installed and configured the AWS CLI.
+
+Finally, I got the file uploaded to S3 as `s3://oxide-cockroachdb-exploration/cockroach-dump-kv-2020-11-11.sql`.
+
+=== Distributed backup
+
+https://www.cockroachlabs.com/docs/stable/backup.html[Docs] here.
+
+[source,text]
+----
+BACKUP DATABASE kv TO "nodelocal://1/backup-2020-11-13" AS OF SYSTEM TIME "2020-11-13T23:40:00Z" WITH DETACHED
+----
+
+This failed and I filed an issue about it:
+https://github.com/cockroachdb/cockroach/issues/56683
+
+=== Plan for next
+
+* check on CockroachDB issue: https://github.com/cockroachdb/cockroach/issues/56683
+* blocked on above: kick off distributed backup
+* expansion test
+* test restore
+** cockroach dump
+** distributed backup
+* look at rolling upgrade client-side data
+* don't forget to update proto-raw.tgz when I'm done here
+
+== 2020-11-18
+
+=== Licensing and Distributed Backup
+
+Re: issue https://github.com/cockroachdb/cockroach/issues/56683[56683].
+
+Conclusion of the https://github.com/cockroachdb/cockroach/issues/56683[CockroachDB issue] is that they made the feature free to use, but it's not part of the open-source product, apparently because that was too much work.
+
+Our internal conclusion is to stick with the OSS build for now.  There's some suspicion that the CCL allows Cockroach Labs to start charging for existing features at any time.  The licensing situation definitely seems like a mess for a few reasons:
+
+* The CCL has a definition of Cockroach Core (the free version) that appears to include everything on github.com/cockroachdb/cockroach, which includes CCL and Enterprise-features code.
+* The CCL claims that you agree to it by just downloading Cockroach, let alone using it -- even the free version.
+* There are a bunch of free features licensed under CCL for some reason (of which Backup appears to be one).  It was confusing enough that you had ((Apache, BSL), CCL) when I thought that corresponded with (free, enterprise-paid), but now it's even more confusing.  Also, the blog post announcing distributed backup says it's part of Cockroach Core, even though it's not under BSL.
+
+As a result, I'll be skipping subsequent "distributed backup" testing.
+
+=== Expansion / contraction, once more
+
+Now that I've got a cluster with a lot more resources (in terms of memory, CPU, and I/O), we're going to do another expansion/contraction test.  For workload, I'm going to repeat what I did on 10/29, which was used for the 11/2 expansion testing:
+
+[source,text]
+----
+date="$(date +%FT%TZ)"
+for node in 52 43 159; do
+	nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+done
+----
+
+Here's me running it:
+
+[source,text]
+----
+root@loadgen0:~# mkdir expansion
+root@loadgen0:~# cd !$
+cd expansion
+root@loadgen0:~/expansion# ls
+root@loadgen0:~/expansion# date="$(date +%FT%TZ)"
+root@loadgen0:~/expansion# for node in 52 43 159; do
+> nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+> done
+[1] 26884
+[2] 26885
+[3] 26886
+root@loadgen0:~/expansion#
+root@loadgen0:~/expansion# ls -l
+total 54
+-rw-r--r--   1 root     root        7677 Nov 18 22:23 kv-histograms-159-2020-11-18T22:23:39Z.out
+-rw-r--r--   1 root     root        7682 Nov 18 22:23 kv-histograms-43-2020-11-18T22:23:39Z.out
+-rw-r--r--   1 root     root        7680 Nov 18 22:23 kv-histograms-52-2020-11-18T22:23:39Z.out
+-rw-r--r--   1 root     root        1260 Nov 18 22:23 loadgen-summary-159-2020-11-18T22:23:39Z.out
+-rw-r--r--   1 root     root        1160 Nov 18 22:23 loadgen-summary-43-2020-11-18T22:23:39Z.out
+-rw-r--r--   1 root     root        1258 Nov 18 22:23 loadgen-summary-52-2020-11-18T22:23:39Z.out
+root@loadgen0:~/expansion#
+----
+
+I'd like to let this run a little while before beginning expansion.
+
+Summary of current situation:
+
+- database "kv": 381.2 GiB replicated size. 258 ranges.
+- cluster: 3 nodes, 7.7% capacity used (disk space), idle for the last several days
+- instances: i3.2xlarge (60 GiB memory, 8 VCPUs, 1700 GiB NVME SSD)
+- OS: illumos omnios-r151034-b3d6e2addc
+- CockroachDB: local OSS build of v20.2.0
+- load generators: 62
+
+As of 22:44Z, performance has been quite stable for over 20 minutes, so I'm going to try the first expansion shortly.  There's plenty of CPU headroom, disk %busy headroom, etc.
+
+Bringing up nvmedb4:
+
+[source,text]
+----
+root@nvmedb4:~# date +%FT%TZ; svcadm enable -s cockroachdb; date +%FT%TZ
+2020-11-18T22:45:04Z
+2020-11-18T22:45:04Z
+root@nvmedb4:~#
+----
+
+I should have started this sooner: I had wanted to instrument fsync times.  I started this on all four existing nodes:
+
+[source,text]
+----
+# dtrace -q -n 'syscall::f*sync:entry{ self->start = timestamp; } syscall::f*sync:return/self->start/{ printf("%Y.%09u %-8s %7d us\n", walltimestamp, walltimestamp % 1000000000, probefunc, (timestamp - self->start) / 1000); self->start = 0; }' | tee /cockroachdb/fsync_times.out
+----
+
+I'm also starting this on node 5 _before_ bringing it up.  I will have fsync output for that whole expansion and subsequent contractions.
+
+I ended up starting CockroachDB on nvmedb4 at:
+
+[source,text]
+----
+root@nvmedb4:~# svcs cockroachdb
+STATE          STIME    FMRI
+online         22:45:04 svc:/application/cockroachdb:default
+root@nvmedb4:~#
+----
+
+It wasn't until 23:53Z that it appeared to finish replicating all ranges.  That's considerably slower than before, but th eimpact was a lot smaller.  There was definitely some impact to p95 and especially p99, but this wasn't as visible in throughput (possibly because we weren't running it full tilt like last time).  CPU utilization peaked around 50% per CPU, and about the same for disk %busy.
+
+I'm going to start another expansion now:
+
+[source,text]
+----
+root@nvmedb5:~# date +%FT%TZ; svcadm enable -s cockroachdb; date +%FT%TZ
+2020-11-19T00:03:20Z
+2020-11-19T00:03:20Z
+root@nvmedb5:~#
+----
+
+I've still got the fsync instrumentation running everywhere.
+
+This expansion converged at about 00:56Z.
+
+Next, I'll try a contraction operation.  At 02:18Z, I ran `cockroach node decommission 5`.
+
+While I wait for this, I'm thinking about the data that would be useful to graph:
+
+* client-side: p95, p99, throughput (similar to what I did before)
+* server side: CPU utilization, disk utilization
+* fsync times:
+** try plotting every data point, but this will probably go badly
+** plot max() for each wall clock second across all data points, all nodes
+** compute overall distribution of latency for the whole period
+
+Decommissioning completed around 02:39:57Z -- about 22 minutes.
+
+I'm going to let the workload run undisturbed for another 15 minutes before decommissioning node 4.
+
+[source,text]
+----
+root@loadgen0:~# date +%FT%TZ && sleep 900 && cockroach node decommission 4 && date +%FT%TZ
+2020-11-19T02:41:44Z
+
+  id | is_live | replicas | is_decommissioning |   membership    | is_draining
+-----+---------+----------+--------------------+-----------------+--------------
+   4 |  true   |      225 |        true        | decommissioning |    false
+...
+(1 row)
+  id | is_live | replicas | is_decommissioning |   membership   | is_draining
+-----+---------+----------+--------------------+----------------+--------------
+   4 |  true   |        0 |        true        | decommissioned |    false
+(1 row)
+
+No more data reported on target nodes. Please verify cluster health before removing the nodes.
+2020-11-19T03:30:56Z
+root@loadgen0:~#
+----
+
+I stopped fsync data collection and the workload at 15:15Z (the next morning PT).
+
+== 2020-11-19
+
+Timeline from yesterday's testing:
+
+[source,text]
+----
+2020-11-18T22:23:39Z start client workload
+2020-11-18T22:45:04Z start node 4
+2020-11-18T23:53:00Z range movement completed
+2020-11-19T00:03:20Z start node 5
+2020-11-19T00:56:00Z range movement completed
+2020-11-19T02:18:00Z decommission node 5 started
+2020-11-19T02:39:57Z decommission node 5 completed
+2020-11-19T02:56:44Z decommission node 4 started
+2020-11-19T03:30:56Z decommission node 4 completed
+----
+
+Based on this, we're probably interested in data from 2020-11-18T22:23:39Z until about 2020-11-19T04:00:00Z.  I'm going to trim the fsync data files accordingly to make them more manageable.  I'm doing this:
+
+[source,text]
+----
+time awk '{ print; } /04:00:/{ exit }' /cockroachdb/fsync_times.out > /cockroachdb/fsync_times_trimmed.out
+----
+
+The output looks about right.  It's still quite a lot of data per node, though -- too much to comfortably put into this repository.  I'm going to write an awk script that will take the maximum value in any calendar second.
+
+[source,text]
+----
+#
+# Given output of DTrace script that traced fsync times, produce a summary file
+# with the maximum fsync time for each calendar second that had any data points
+# in the input file.
+#
+# The input file consists of lines like this:
+#
+#     2020 Nov 19 00:03:20.536045823 fdsync       123 us
+#
+
+BEGIN{
+	current_second = 0;
+	current_max = 0;
+}
+
+$2 != "Nov"{
+	printf("hardcoded for november!");
+	exit(1);
+}
+
+{
+	split($4, a, ".");
+	clocksecond = $1 "-11-" $3 "T" a[1];
+	if (current_second != clocksecond) {
+		if (current_max > 0) {
+			printf("%s %d\n", current_second, current_max);
+		}
+
+		current_second = clocksecond;
+		current_max = $6;
+	} else if ($6 > current_max) {
+		current_max = $6;
+	}
+}
+
+END {
+	if (current_max > 0) {
+		printf("%s %d\n", current_second, current_max);
+	}
+}
+----
+
+Run with:
+
+[source,text]
+----
+time awk -f fsync_summarize.awk /cockroachdb/fsync_times_trimmed.out > /cockroachdb/fsync_summary.out
+----
+
+This produced much smaller files.
+
+=== Analyzing fsync times
+
+As I described above, I modified the data a little bit.  For each of the five database nodes, I have:
+
+- fsync_times.out: raw data from DTrace enabling for the entire period
+- fsync_times_trimmed.out: same as fsync_times.out, but ignoring all records after 0400Z
+- fsync_summary.out: contains the *maximum* value of fsync latency for any given wall clock second
+
+I copied all five "trimmed" files to a dev zone (lennier), where I will archive these to S3.
+
+I'm also doing some basic analysis here.  I concatenated all the files together and created a histogram of all the latency data points.  I also sorted them by time and again by value:
+
+[source,text]
+----
+cat * > all-fsync-times-trimmed.out
+sort all-fsync-times-trimmed.out > all-fsync-times-trimmed-sorted.out
+sort -k6n,6 all-fsync-times-trimmed.out > all-fsync-times-trimmed-sorted-by-value.out
+----
+
+I created a histogram using the Node `hist` tool:
+
+[source,text]
+----
+$ cat all-fsync-times-trimmed.out | awk '{print $6}' | ./node_modules/.bin/hist
+           value  ------------- Distribution ------------- count
+               1 |                                         0
+               2 |                                         569
+               4 |                                         7908
+               8 |                                         137
+              16 |                                         40
+              32 |                                         35
+              64 |                                         125
+             128 |                                         42345
+             256 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   21000896
+             512 |@@                                       846972
+            1024 |@                                        354598
+            2048 |                                         70011
+            4096 |                                         31505
+            8192 |                                         17402
+           16384 |                                         8142
+           32768 |                                         505
+           65536 |                                         323
+          131072 |                                         404
+          262144 |                                         522
+          524288 |                                         157
+         1048576 |                                         2
+         2097152 |                                         0
+----
+
+This summary annotates this data with the maximum percentile contained in each bucket:
+
+[source,text]
+----
+Min lat(us) Count       Max %ile in bucket
+----------- ----------- ------------------
+1           0           0.000%
+2           569         0.003%
+4           7908        0.038%
+8           137         0.038%
+16          40          0.039%
+32          35          0.039%
+64          125         0.039%
+128         42345       0.229%
+256         21000896    94.055%
+512         846972      97.840%
+1024        354598      99.424%
+2048        70011       99.737%
+4096        31505       99.877%
+8192        17402       99.955%
+16384       8142        99.991%
+32768       505         99.994%
+65536       323         99.995%
+131072      404         99.997%
+262144      522         99.999%
+524288      157         100.000%
+1048576     2           100.000%
+2097152     0           100.000%
+----
+
+This tells us that:
+
+* p95 < 1ms
+* p99 < 2ms
+
+There are 22,382,598 total data points.  Since I also have the file sorted by value, we can get more precise values for these percentiles.
+
+p50 (median) = line 11191299
+p95 = line 21263468
+p99 = line 22158772
+p995 = line 22270685
+p999 = line 22360215
+
+[source,text]
+----
+dap@lennier:~/nvmedb_data$ cat -n all-fsync-times-trimmed-sorted-by-value.out | awk '$1 == 11191299 || $1 == 21263468 || $1 == 22158772 || $1 == 22270685 || $1 == 22360215'
+11191299        2020 Nov 18 23:45:34.039325144 fdsync       329 us
+21263468        2020 Nov 19 03:53:10.466926990 fdsync       542 us
+22158772        2020 Nov 19 00:04:58.955049856 fdsync      1598 us
+22270685        2020 Nov 19 03:06:47.674328850 fdsync      2255 us
+22360215        2020 Nov 19 03:07:46.387579487 fdsync      9669 us
+dap@lennier:~/nvmedb_data$ 
+----
+
+To compute the average:
+
+[source,text]
+----
+dap@lennier:~/nvmedb_data$ awk '{ s += $6 } END { print s }' all-fsync-times-trimmed-sorted-by-value.out
+9327788734
+----
+
+Or summarized fsync latency across all fsyncs on all nodes:
+
+[source,text]
+----
+avg  =  416 us
+p50  =  329 us
+p95  =  542 us
+p99  = 1598 us
+p995 = 2255 us
+p999 = 9669 us
+----
+
+While looking around for expected fsync times on Linux, I found https://www.percona.com/blog/2018/02/08/fsync-performance-storage-devices/[this blog post from Percona].  I suspect this is what Keith from Cockroach Labs found, and it claims ZFS fsync takes on the order of 10ms, which is definitely wrong.  But that's the author's home server with 7200 RPM drives and no slog.
+
+I've copied the raw fsync data to S3:
+
+[source,text]
+----
+dap@lennier:~/nvmedb_data$ aws s3 ls s3://oxide-cockroachdb-exploration/data/2020-11-19/
+2020-11-19 19:03:01   41153743 nvmedb1-fsync_times_trimmed.out.gz
+2020-11-19 19:03:08   42268402 nvmedb2-fsync_times_trimmed.out.gz
+2020-11-19 19:03:15   42493882 nvmedb3-fsync_times_trimmed.out.gz
+2020-11-19 19:03:21   28035414 nvmedb4-fsync_times_trimmed.out.gz
+2020-11-19 19:03:28   12608327 nvmedb5-fsync_times_trimmed.out.gz
+----
+
+=== Client-side data
+
+I copied the summary files and kv-histograms files from the load generator zone to my main system.
+
+I trimmed them using a similar process to what I did for the fsync files:
+
+[source,text]
+----
+for file in kv-histograms-*; do awk '{print;} /04:00:/{ exit }' $file > $file.trimmed; done
+----
+
+Now I'm following similar steps to my last analysis:
+
+[source,text]
+----
+chist print client-data/kv-histograms-*.trimmed > chist-all.out
+...
+dap@zathras cockroachdb-testing-round2 $ mkdir analysis/2020-11-18-nvme-expansion-contraction
+dap@zathras cockroachdb-testing-round2 $ cd !$
+cd analysis/2020-11-18-nvme-expansion-contraction
+dap@zathras 2020-11-18-nvme-expansion-contraction $ ls
+dap@zathras 2020-11-18-nvme-expansion-contraction $ ln -s ../../data/2020-11-18-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-18-nvme-expansion-contraction $ ls -l
+total 0
+lrwxr-xr-x  1 dap  staff  60 Nov 19 11:13 client-data@ -> ../../data/2020-11-18-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-18-nvme-expansion-contraction $ mv client-data/chist-all.out .
+dap@zathras 2020-11-18-nvme-expansion-contraction $ awk 'NR == 1 || $2 == "write"' chist-all.out > chist-writes.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ awk 'NR == 1 || $2 == "read"' chist-all.out > chist-reads.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ awk '$3 != 3' chist-*.out
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+TIME                     OPNAM  # OPS/SEC p50(ms) p95(ms) p99(ms)    pMax
+dap@zathras 2020-11-18-nvme-expansion-contraction $ ls -l
+total 11992
+-rw-r--r--  1 dap  staff  2986640 Nov 19 11:11 chist-all.out
+-rw-r--r--  1 dap  staff  1493394 Nov 19 11:14 chist-reads.out
+-rw-r--r--  1 dap  staff  1493320 Nov 19 11:13 chist-writes.out
+lrwxr-xr-x  1 dap  staff       60 Nov 19 11:13 client-data@ -> ../../data/2020-11-18-nvme-expansion-contraction/client-data
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-reads-throughput.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-reads-pMax-latency.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-reads.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-reads-p99-latency.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$4 }' > plot-data-writes-throughput.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$8 }' > plot-data-writes-pMax-latency.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cat chist-writes.out | awk '$1 != "TIME"{ print $1,$7 }' > plot-data-writes-p99-latency.out
+dap@zathras 2020-11-18-nvme-expansion-contraction $ cp ../2020-11-02-nvme-expansion-contraction/gengraphs.gnuplot .
+dap@zathras 2020-11-18-nvme-expansion-contraction $ vim gengraphs.gnuplot
+dap@zathras 2020-11-18-nvme-expansion-contraction $
+dap@zathras 2020-11-18-nvme-expansion-contraction $ gnuplot gengraphs.gnuplot 
+dap@zathras 2020-11-18-nvme-expansion-contraction $ 
+----
+
+Overall, this does look a lot better than previous runs.  Reminder of key differences:
+
+* i3.2xlarge instances (much more DRAM, VCPUs, maybe more dedicated I/O)
+* CockroachDB v20.2.0 OSS build
+* instrumented every fsync call on all nodes for a bunch of this testing
+* I backed off the clients so that they're targeting a particular rate rather than going as fast as they can.
+
+The latency and throughput are clearly degraded while this is going on, but the effect isn't nearly so significant, particularly for throughput.  There are lots more individual data points (seconds) in which throughput was a fair bit lower, but it's clear the majority of per-second throughput data points remain good.  There might be ways to improve this graph to make it clearer.
+
+To clean up a bit, I'm going to remove the original out files and gzip all of the raw data files.
+
+=== `cockroach debug zip`
+
+For reference, I tried this out today:
+
+[source,text]
+----
+root@nvmedb1:/cockroachdb# /cockroachdb/bin/cockroach debug zip --insecure --host 192.168.1.52 foo.zip
+establishing RPC connection to 192.168.1.52:26257...
+retrieving the node status to get the SQL address...
+using SQL address: 192.168.1.52:26257
+using SQL connection URL: postgresql://root@192.168.1.52:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+writing foo.zip
+requesting data for debug/events... writing: debug/events.json
+requesting data for debug/rangelog... writing: debug/rangelog.json
+requesting data for debug/settings... writing: debug/settings.json
+requesting data for debug/reports/problemranges... writing: debug/reports/problemranges.json
+retrieving SQL data for crdb_internal.cluster_queries... writing: debug/crdb_internal.cluster_queries.txt
+retrieving SQL data for crdb_internal.cluster_sessions... writing: debug/crdb_internal.cluster_sessions.txt
+retrieving SQL data for crdb_internal.cluster_settings... writing: debug/crdb_internal.cluster_settings.txt
+retrieving SQL data for crdb_internal.cluster_transactions... writing: debug/crdb_internal.cluster_transactions.txt
+retrieving SQL data for crdb_internal.jobs... writing: debug/crdb_internal.jobs.txt
+retrieving SQL data for system.jobs... writing: debug/system.jobs.txt
+retrieving SQL data for system.descriptor... writing: debug/system.descriptor.txt
+retrieving SQL data for system.namespace... writing: debug/system.namespace.txt
+retrieving SQL data for system.namespace2... writing: debug/system.namespace2.txt
+retrieving SQL data for crdb_internal.kv_node_status... writing: debug/crdb_internal.kv_node_status.txt
+retrieving SQL data for crdb_internal.kv_store_status... writing: debug/crdb_internal.kv_store_status.txt
+retrieving SQL data for crdb_internal.schema_changes... writing: debug/crdb_internal.schema_changes.txt
+retrieving SQL data for crdb_internal.partitions... writing: debug/crdb_internal.partitions.txt
+retrieving SQL data for crdb_internal.zones... writing: debug/crdb_internal.zones.txt
+requesting nodes... writing: debug/nodes.json
+requesting liveness... writing: debug/liveness.json
+requesting CPU profiles... ok
+writing: debug/nodes/1/cpu.pprof
+writing: debug/nodes/2/cpu.pprof
+writing: debug/nodes/3/cpu.pprof
+writing: debug/nodes/4/cpu.pprof
+writing: debug/nodes/5/cpu.pprof
+writing: debug/nodes/1/status.json
+using SQL connection URL for node 1: postgresql://root@192.168.1.52:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+retrieving SQL data for crdb_internal.feature_usage... writing: debug/nodes/1/crdb_internal.feature_usage.txt
+retrieving SQL data for crdb_internal.gossip_alerts... writing: debug/nodes/1/crdb_internal.gossip_alerts.txt
+retrieving SQL data for crdb_internal.gossip_liveness... writing: debug/nodes/1/crdb_internal.gossip_liveness.txt
+retrieving SQL data for crdb_internal.gossip_network... writing: debug/nodes/1/crdb_internal.gossip_network.txt
+retrieving SQL data for crdb_internal.gossip_nodes... writing: debug/nodes/1/crdb_internal.gossip_nodes.txt
+retrieving SQL data for crdb_internal.leases... writing: debug/nodes/1/crdb_internal.leases.txt
+retrieving SQL data for crdb_internal.node_build_info... writing: debug/nodes/1/crdb_internal.node_build_info.txt
+retrieving SQL data for crdb_internal.node_metrics... writing: debug/nodes/1/crdb_internal.node_metrics.txt
+retrieving SQL data for crdb_internal.node_queries... writing: debug/nodes/1/crdb_internal.node_queries.txt
+retrieving SQL data for crdb_internal.node_runtime_info... writing: debug/nodes/1/crdb_internal.node_runtime_info.txt
+retrieving SQL data for crdb_internal.node_sessions... writing: debug/nodes/1/crdb_internal.node_sessions.txt
+retrieving SQL data for crdb_internal.node_statement_statistics... writing: debug/nodes/1/crdb_internal.node_statement_statistics.txt
+retrieving SQL data for crdb_internal.node_transaction_statistics... writing: debug/nodes/1/crdb_internal.node_transaction_statistics.txt
+retrieving SQL data for crdb_internal.node_transactions... writing: debug/nodes/1/crdb_internal.node_transactions.txt
+retrieving SQL data for crdb_internal.node_txn_stats... writing: debug/nodes/1/crdb_internal.node_txn_stats.txt
+requesting data for debug/nodes/1/details... writing: debug/nodes/1/details.json
+requesting data for debug/nodes/1/gossip... writing: debug/nodes/1/gossip.json
+requesting data for debug/nodes/1/enginestats... writing: debug/nodes/1/enginestats.json
+requesting stacks for node 1... writing: debug/nodes/1/stacks.txt
+requesting threads for node 1... writing: debug/nodes/1/threads.txt
+requesting heap profile for node 1... writing: debug/nodes/1/heap.pprof
+requesting heap files for node 1... 200 found
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T10_29_15.220.168543696.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T10_29_25.220.205207112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T10_29_35.221.243794024.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T10_30_25.221.248857072.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T10_31_15.222.253543464.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T11_31_15.276.137566504.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T11_31_25.277.174090152.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T11_31_35.277.211567088.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T11_31_45.277.250901336.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T12_46_05.338.246233112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T13_16_45.366.249351456.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T13_17_35.367.250943208.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T13_18_35.368.251243800.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T13_19_25.368.252408288.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T14_19_25.416.160689464.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T14_19_35.416.197900960.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T14_19_45.416.237943912.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T14_20_35.417.247808576.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T14_59_55.456.250446256.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T15_59_55.503.180615472.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T16_00_05.503.218254360.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T16_00_55.504.232290704.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T16_01_55.504.250954264.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T17_02_55.558.219896112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T17_03_45.557.231357144.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T17_04_35.558.238952584.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T17_05_35.559.241830352.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T17_06_25.559.257870816.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T18_07_25.604.216007824.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T18_08_15.605.229433816.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T18_09_15.605.245173112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T18_10_05.606.247596832.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T18_10_55.606.252433256.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T19_10_55.655.203473104.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T19_11_05.655.239886624.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T19_11_55.655.246041304.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T19_12_55.656.259984120.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T20_14_05.704.221122728.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T20_14_55.704.224888480.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T20_15_45.705.225667856.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T20_16_35.706.236777120.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T20_17_25.706.246236320.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T21_17_25.755.234167096.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T21_19_15.757.242806728.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T21_20_05.757.247140736.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T21_24_15.760.250923008.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T22_27_35.814.236579320.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T22_28_35.815.243602648.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T22_34_55.820.244225072.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T22_35_45.820.247032536.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T22_36_35.820.250914320.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T23_36_35.870.241070728.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-17T23_37_25.870.258754200.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T00_37_35.919.222646192.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T00_38_35.920.242985392.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T01_10_15.946.247421200.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T01_35_15.971.247799608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T01_37_45.971.250047688.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T02_37_46.034.218741608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T02_38_46.035.235350080.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T02_39_26.036.242580624.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T02_40_16.037.244313496.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T02_41_16.038.258471632.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T03_43_56.123.234322624.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T03_44_46.124.237381376.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T03_45_36.125.247996344.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T04_45_36.184.248778568.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T04_46_26.185.251361472.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T05_46_26.240.181818280.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T05_46_36.240.221138664.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T05_47_26.241.231290368.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T05_49_56.243.237966424.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T05_50_46.243.255995864.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T06_50_46.305.238960112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T06_51_36.306.250677456.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T07_52_36.370.219652952.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T07_53_26.371.237088008.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T07_54_06.372.241496056.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T07_54_46.373.247387432.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T07_55_36.375.251965784.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T08_55_36.442.216375352.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T08_56_26.442.221100784.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T08_57_16.444.223071296.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T08_58_06.446.238608360.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T08_58_56.446.246815776.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T09_59_06.516.236117192.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T09_59_56.516.243893240.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T10_14_46.532.244686952.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T10_38_46.559.245852808.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T10_39_36.560.252839424.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T11_39_46.615.228352232.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T11_40_26.616.234217432.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T11_41_26.617.239648416.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T11_42_16.617.247142840.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T11_43_06.618.254509080.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T12_44_56.675.216495912.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T12_45_46.676.229956608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T12_46_36.676.238693816.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T12_47_36.678.243186408.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T12_48_26.678.257895848.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T13_50_06.737.218442248.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T13_50_56.736.232997888.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T13_51_46.737.237605504.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T13_53_36.738.242782688.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T13_54_26.739.250046144.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T14_54_26.789.191904376.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T14_54_36.791.230010472.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T14_55_26.795.237719728.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T15_00_26.799.245190904.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T15_01_16.800.250184016.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T16_01_16.853.215186736.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T16_02_16.854.237092472.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T16_03_06.854.252663744.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T17_03_06.911.233036656.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T17_03_56.911.245766888.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T17_04_46.911.246135456.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T17_05_36.912.247537336.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T18_05_36.961.154267488.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T18_05_46.961.191247112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T18_05_56.962.229796016.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T18_07_46.964.239882032.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T18_08_36.964.248380160.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T19_09_27.011.222484760.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T19_10_17.012.227896216.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T19_11_07.013.239387848.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T19_12_57.018.243050536.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T19_13_47.016.248708496.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T20_13_47.071.166023024.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T20_13_57.071.205170920.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T20_14_07.071.242954296.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T20_14_57.072.260407824.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T21_16_57.123.259894072.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T22_15_37.170.276586552.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T22_15_47.171.316075208.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T22_25_07.181.325953216.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T22_25_27.183.345302632.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T23_27_27.269.269037992.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T23_34_37.279.269375512.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T23_42_27.289.270359920.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-18T23_47_37.298.270814544.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T00_18_37.344.272570024.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T01_18_37.441.199601904.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T01_18_57.441.222806536.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T01_19_17.442.247336000.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T01_19_37.442.259773856.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T01_19_57.443.270980640.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T02_20_57.542.270802168.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T02_25_27.550.271154016.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T02_28_27.554.289790176.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T03_06_17.606.289796720.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T03_18_17.624.319369056.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T04_20_07.705.265145392.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T05_15_07.793.266203608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T05_15_27.795.267429888.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T05_45_07.839.272236000.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T05_59_57.862.277966080.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T06_59_57.972.187092872.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T07_00_27.972.261638272.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T07_02_57.975.262650176.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T07_03_17.977.281388576.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T08_06_58.064.264739208.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T08_13_38.073.266205984.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T08_14_28.074.270470760.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T08_23_08.086.272480240.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T08_32_28.099.316869608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T10_24_28.261.275381328.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T10_38_38.281.344000456.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T10_38_58.283.358974776.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T10_39_08.282.369247736.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T10_39_58.284.380133168.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T11_42_48.381.271800880.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T12_00_58.445.272624032.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T12_02_08.447.274577368.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T12_40_48.500.296930744.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T12_40_58.501.345329344.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T13_42_48.592.257623336.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T13_43_58.592.261288824.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T13_44_38.593.270295544.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T13_45_48.595.273835768.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T13_47_38.598.274716608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T14_47_58.686.247551512.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T14_48_28.687.266161656.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T14_50_58.691.269057848.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T14_53_18.695.270803704.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T14_56_58.699.271226392.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T15_58_18.765.250323968.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T15_58_48.766.250350416.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T15_59_28.766.255020160.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T15_59_58.766.264369248.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T16_26_08.790.280481024.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T17_26_08.846.147326824.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T17_26_18.846.196561000.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T17_26_28.846.245195024.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T17_28_28.848.249362088.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T17_29_08.849.272126112.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T18_29_18.898.245313888.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T18_29_48.898.250010168.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T18_38_48.905.254117608.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T18_43_18.910.257208704.pprof
+writing: debug/nodes/1/heapprof/memprof.2020-11-19T18_55_58.921.257314064.pprof
+requesting goroutine files for node 1... 0 found
+requesting log files list... 29 found
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-10T13_51_04Z.001220.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-10T13_51_04Z.001220.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-10T16_05_55Z.001220.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-10T16_05_55Z.001220.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-13T01_30_37Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-13T01_30_37Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-14T05_08_07Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-14T05_08_07Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-15T08_45_36Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-15T08_45_36Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-16T12_22_26Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-16T12_22_26Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-17T15_57_25Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-17T15_57_25Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-18T19_33_25Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-18T19_33_25Z.013468.log
+requesting log file cockroach.nvmedb1.cockroachdb.2020-11-19T13_42_18Z.013468.log... writing: debug/nodes/1/logs/cockroach.nvmedb1.cockroachdb.2020-11-19T13_42_18Z.013468.log
+requesting log file cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T01_00_49Z.001220.log... writing: debug/nodes/1/logs/cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T01_00_49Z.001220.log
+requesting log file cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log... writing: debug/nodes/1/logs/cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log
+requesting log file cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log... writing: debug/nodes/1/logs/cockroach-stderr.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log
+requesting log file cockroach-stderr.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log... writing: debug/nodes/1/logs/cockroach-stderr.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T06_30_28Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T06_30_28Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T07_26_07Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T07_26_07Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T10_11_37Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T10_11_37Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T11_01_15Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T11_01_15Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T11_47_05Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T11_47_05Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T12_34_36Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T12_34_36Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T13_21_04Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T13_21_04Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T14_08_28Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T14_08_28Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T14_57_00Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T14_57_00Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T15_44_31Z.001220.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T15_44_31Z.001220.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T16_35_29Z.003256.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-10T23_13_54Z.007017.log
+requesting log file cockroach-pebble.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log... writing: debug/nodes/1/logs/cockroach-pebble.nvmedb1.cockroachdb.2020-11-11T21_53_36Z.013468.log
+requesting ranges... 299 found
+writing: debug/nodes/1/ranges/1.json
+writing: debug/nodes/1/ranges/2.json
+writing: debug/nodes/1/ranges/3.json
+writing: debug/nodes/1/ranges/4.json
+writing: debug/nodes/1/ranges/5.json
+writing: debug/nodes/1/ranges/6.json
+writing: debug/nodes/1/ranges/7.json
+writing: debug/nodes/1/ranges/8.json
+writing: debug/nodes/1/ranges/9.json
+writing: debug/nodes/1/ranges/10.json
+writing: debug/nodes/1/ranges/11.json
+writing: debug/nodes/1/ranges/12.json
+writing: debug/nodes/1/ranges/13.json
+writing: debug/nodes/1/ranges/14.json
+writing: debug/nodes/1/ranges/15.json
+writing: debug/nodes/1/ranges/16.json
+writing: debug/nodes/1/ranges/17.json
+writing: debug/nodes/1/ranges/18.json
+writing: debug/nodes/1/ranges/19.json
+writing: debug/nodes/1/ranges/20.json
+writing: debug/nodes/1/ranges/21.json
+writing: debug/nodes/1/ranges/22.json
+writing: debug/nodes/1/ranges/23.json
+writing: debug/nodes/1/ranges/24.json
+writing: debug/nodes/1/ranges/25.json
+writing: debug/nodes/1/ranges/26.json
+writing: debug/nodes/1/ranges/27.json
+writing: debug/nodes/1/ranges/28.json
+writing: debug/nodes/1/ranges/29.json
+writing: debug/nodes/1/ranges/30.json
+writing: debug/nodes/1/ranges/31.json
+writing: debug/nodes/1/ranges/32.json
+writing: debug/nodes/1/ranges/33.json
+writing: debug/nodes/1/ranges/34.json
+writing: debug/nodes/1/ranges/35.json
+writing: debug/nodes/1/ranges/36.json
+writing: debug/nodes/1/ranges/37.json
+writing: debug/nodes/1/ranges/38.json
+writing: debug/nodes/1/ranges/39.json
+writing: debug/nodes/1/ranges/40.json
+writing: debug/nodes/1/ranges/41.json
+writing: debug/nodes/1/ranges/42.json
+writing: debug/nodes/1/ranges/43.json
+writing: debug/nodes/1/ranges/44.json
+writing: debug/nodes/1/ranges/45.json
+writing: debug/nodes/1/ranges/46.json
+writing: debug/nodes/1/ranges/47.json
+writing: debug/nodes/1/ranges/48.json
+writing: debug/nodes/1/ranges/49.json
+writing: debug/nodes/1/ranges/50.json
+writing: debug/nodes/1/ranges/51.json
+writing: debug/nodes/1/ranges/52.json
+writing: debug/nodes/1/ranges/53.json
+writing: debug/nodes/1/ranges/54.json
+writing: debug/nodes/1/ranges/55.json
+writing: debug/nodes/1/ranges/56.json
+writing: debug/nodes/1/ranges/57.json
+writing: debug/nodes/1/ranges/58.json
+writing: debug/nodes/1/ranges/60.json
+writing: debug/nodes/1/ranges/61.json
+writing: debug/nodes/1/ranges/62.json
+writing: debug/nodes/1/ranges/63.json
+writing: debug/nodes/1/ranges/64.json
+writing: debug/nodes/1/ranges/65.json
+writing: debug/nodes/1/ranges/66.json
+writing: debug/nodes/1/ranges/67.json
+writing: debug/nodes/1/ranges/68.json
+writing: debug/nodes/1/ranges/69.json
+writing: debug/nodes/1/ranges/70.json
+writing: debug/nodes/1/ranges/71.json
+writing: debug/nodes/1/ranges/72.json
+writing: debug/nodes/1/ranges/73.json
+writing: debug/nodes/1/ranges/74.json
+writing: debug/nodes/1/ranges/75.json
+writing: debug/nodes/1/ranges/76.json
+writing: debug/nodes/1/ranges/77.json
+writing: debug/nodes/1/ranges/78.json
+writing: debug/nodes/1/ranges/79.json
+writing: debug/nodes/1/ranges/80.json
+writing: debug/nodes/1/ranges/81.json
+writing: debug/nodes/1/ranges/82.json
+writing: debug/nodes/1/ranges/83.json
+writing: debug/nodes/1/ranges/84.json
+writing: debug/nodes/1/ranges/85.json
+writing: debug/nodes/1/ranges/86.json
+writing: debug/nodes/1/ranges/87.json
+writing: debug/nodes/1/ranges/88.json
+writing: debug/nodes/1/ranges/89.json
+writing: debug/nodes/1/ranges/90.json
+writing: debug/nodes/1/ranges/92.json
+writing: debug/nodes/1/ranges/94.json
+writing: debug/nodes/1/ranges/95.json
+writing: debug/nodes/1/ranges/96.json
+writing: debug/nodes/1/ranges/97.json
+writing: debug/nodes/1/ranges/98.json
+writing: debug/nodes/1/ranges/99.json
+writing: debug/nodes/1/ranges/100.json
+writing: debug/nodes/1/ranges/101.json
+writing: debug/nodes/1/ranges/102.json
+writing: debug/nodes/1/ranges/103.json
+writing: debug/nodes/1/ranges/104.json
+writing: debug/nodes/1/ranges/105.json
+writing: debug/nodes/1/ranges/106.json
+writing: debug/nodes/1/ranges/107.json
+writing: debug/nodes/1/ranges/108.json
+writing: debug/nodes/1/ranges/109.json
+writing: debug/nodes/1/ranges/110.json
+writing: debug/nodes/1/ranges/111.json
+writing: debug/nodes/1/ranges/112.json
+writing: debug/nodes/1/ranges/113.json
+writing: debug/nodes/1/ranges/114.json
+writing: debug/nodes/1/ranges/115.json
+writing: debug/nodes/1/ranges/116.json
+writing: debug/nodes/1/ranges/117.json
+writing: debug/nodes/1/ranges/118.json
+writing: debug/nodes/1/ranges/119.json
+writing: debug/nodes/1/ranges/120.json
+writing: debug/nodes/1/ranges/121.json
+writing: debug/nodes/1/ranges/122.json
+writing: debug/nodes/1/ranges/123.json
+writing: debug/nodes/1/ranges/124.json
+writing: debug/nodes/1/ranges/125.json
+writing: debug/nodes/1/ranges/126.json
+writing: debug/nodes/1/ranges/127.json
+writing: debug/nodes/1/ranges/128.json
+writing: debug/nodes/1/ranges/129.json
+writing: debug/nodes/1/ranges/130.json
+writing: debug/nodes/1/ranges/131.json
+writing: debug/nodes/1/ranges/132.json
+writing: debug/nodes/1/ranges/133.json
+writing: debug/nodes/1/ranges/134.json
+writing: debug/nodes/1/ranges/135.json
+writing: debug/nodes/1/ranges/136.json
+writing: debug/nodes/1/ranges/137.json
+writing: debug/nodes/1/ranges/138.json
+writing: debug/nodes/1/ranges/139.json
+writing: debug/nodes/1/ranges/140.json
+writing: debug/nodes/1/ranges/141.json
+writing: debug/nodes/1/ranges/142.json
+writing: debug/nodes/1/ranges/143.json
+writing: debug/nodes/1/ranges/144.json
+writing: debug/nodes/1/ranges/145.json
+writing: debug/nodes/1/ranges/146.json
+writing: debug/nodes/1/ranges/147.json
+writing: debug/nodes/1/ranges/148.json
+writing: debug/nodes/1/ranges/149.json
+writing: debug/nodes/1/ranges/150.json
+writing: debug/nodes/1/ranges/151.json
+writing: debug/nodes/1/ranges/153.json
+writing: debug/nodes/1/ranges/154.json
+writing: debug/nodes/1/ranges/155.json
+writing: debug/nodes/1/ranges/156.json
+writing: debug/nodes/1/ranges/157.json
+writing: debug/nodes/1/ranges/158.json
+writing: debug/nodes/1/ranges/159.json
+writing: debug/nodes/1/ranges/160.json
+writing: debug/nodes/1/ranges/161.json
+writing: debug/nodes/1/ranges/162.json
+writing: debug/nodes/1/ranges/163.json
+writing: debug/nodes/1/ranges/164.json
+writing: debug/nodes/1/ranges/165.json
+writing: debug/nodes/1/ranges/166.json
+writing: debug/nodes/1/ranges/167.json
+writing: debug/nodes/1/ranges/168.json
+writing: debug/nodes/1/ranges/169.json
+writing: debug/nodes/1/ranges/170.json
+writing: debug/nodes/1/ranges/171.json
+writing: debug/nodes/1/ranges/172.json
+writing: debug/nodes/1/ranges/173.json
+writing: debug/nodes/1/ranges/174.json
+writing: debug/nodes/1/ranges/175.json
+writing: debug/nodes/1/ranges/176.json
+writing: debug/nodes/1/ranges/177.json
+writing: debug/nodes/1/ranges/178.json
+writing: debug/nodes/1/ranges/179.json
+writing: debug/nodes/1/ranges/180.json
+writing: debug/nodes/1/ranges/181.json
+writing: debug/nodes/1/ranges/182.json
+writing: debug/nodes/1/ranges/183.json
+writing: debug/nodes/1/ranges/184.json
+writing: debug/nodes/1/ranges/185.json
+writing: debug/nodes/1/ranges/186.json
+writing: debug/nodes/1/ranges/187.json
+writing: debug/nodes/1/ranges/188.json
+writing: debug/nodes/1/ranges/189.json
+writing: debug/nodes/1/ranges/190.json
+writing: debug/nodes/1/ranges/191.json
+writing: debug/nodes/1/ranges/192.json
+writing: debug/nodes/1/ranges/193.json
+writing: debug/nodes/1/ranges/194.json
+writing: debug/nodes/1/ranges/195.json
+writing: debug/nodes/1/ranges/196.json
+writing: debug/nodes/1/ranges/197.json
+writing: debug/nodes/1/ranges/198.json
+writing: debug/nodes/1/ranges/199.json
+writing: debug/nodes/1/ranges/200.json
+writing: debug/nodes/1/ranges/201.json
+writing: debug/nodes/1/ranges/202.json
+writing: debug/nodes/1/ranges/203.json
+writing: debug/nodes/1/ranges/204.json
+writing: debug/nodes/1/ranges/205.json
+writing: debug/nodes/1/ranges/206.json
+writing: debug/nodes/1/ranges/207.json
+writing: debug/nodes/1/ranges/208.json
+writing: debug/nodes/1/ranges/209.json
+writing: debug/nodes/1/ranges/210.json
+writing: debug/nodes/1/ranges/211.json
+writing: debug/nodes/1/ranges/212.json
+writing: debug/nodes/1/ranges/213.json
+writing: debug/nodes/1/ranges/214.json
+writing: debug/nodes/1/ranges/215.json
+writing: debug/nodes/1/ranges/216.json
+writing: debug/nodes/1/ranges/217.json
+writing: debug/nodes/1/ranges/218.json
+writing: debug/nodes/1/ranges/219.json
+writing: debug/nodes/1/ranges/220.json
+writing: debug/nodes/1/ranges/221.json
+writing: debug/nodes/1/ranges/222.json
+writing: debug/nodes/1/ranges/223.json
+writing: debug/nodes/1/ranges/224.json
+writing: debug/nodes/1/ranges/225.json
+writing: debug/nodes/1/ranges/226.json
+writing: debug/nodes/1/ranges/227.json
+writing: debug/nodes/1/ranges/228.json
+writing: debug/nodes/1/ranges/229.json
+writing: debug/nodes/1/ranges/230.json
+writing: debug/nodes/1/ranges/231.json
+writing: debug/nodes/1/ranges/232.json
+writing: debug/nodes/1/ranges/233.json
+writing: debug/nodes/1/ranges/234.json
+writing: debug/nodes/1/ranges/235.json
+writing: debug/nodes/1/ranges/236.json
+writing: debug/nodes/1/ranges/237.json
+writing: debug/nodes/1/ranges/238.json
+writing: debug/nodes/1/ranges/239.json
+writing: debug/nodes/1/ranges/240.json
+writing: debug/nodes/1/ranges/241.json
+writing: debug/nodes/1/ranges/242.json
+writing: debug/nodes/1/ranges/243.json
+writing: debug/nodes/1/ranges/244.json
+writing: debug/nodes/1/ranges/245.json
+writing: debug/nodes/1/ranges/246.json
+writing: debug/nodes/1/ranges/247.json
+writing: debug/nodes/1/ranges/248.json
+writing: debug/nodes/1/ranges/249.json
+writing: debug/nodes/1/ranges/250.json
+writing: debug/nodes/1/ranges/251.json
+writing: debug/nodes/1/ranges/252.json
+writing: debug/nodes/1/ranges/253.json
+writing: debug/nodes/1/ranges/254.json
+writing: debug/nodes/1/ranges/255.json
+writing: debug/nodes/1/ranges/256.json
+writing: debug/nodes/1/ranges/257.json
+writing: debug/nodes/1/ranges/258.json
+writing: debug/nodes/1/ranges/259.json
+writing: debug/nodes/1/ranges/260.json
+writing: debug/nodes/1/ranges/261.json
+writing: debug/nodes/1/ranges/262.json
+writing: debug/nodes/1/ranges/263.json
+writing: debug/nodes/1/ranges/264.json
+writing: debug/nodes/1/ranges/265.json
+writing: debug/nodes/1/ranges/266.json
+writing: debug/nodes/1/ranges/267.json
+writing: debug/nodes/1/ranges/268.json
+writing: debug/nodes/1/ranges/269.json
+writing: debug/nodes/1/ranges/270.json
+writing: debug/nodes/1/ranges/271.json
+writing: debug/nodes/1/ranges/272.json
+writing: debug/nodes/1/ranges/276.json
+writing: debug/nodes/1/ranges/277.json
+writing: debug/nodes/1/ranges/278.json
+writing: debug/nodes/1/ranges/279.json
+writing: debug/nodes/1/ranges/280.json
+writing: debug/nodes/1/ranges/281.json
+writing: debug/nodes/1/ranges/282.json
+writing: debug/nodes/1/ranges/286.json
+writing: debug/nodes/1/ranges/287.json
+writing: debug/nodes/1/ranges/288.json
+writing: debug/nodes/1/ranges/289.json
+writing: debug/nodes/1/ranges/290.json
+writing: debug/nodes/1/ranges/291.json
+writing: debug/nodes/1/ranges/292.json
+writing: debug/nodes/1/ranges/293.json
+writing: debug/nodes/1/ranges/294.json
+writing: debug/nodes/1/ranges/295.json
+writing: debug/nodes/1/ranges/296.json
+writing: debug/nodes/1/ranges/297.json
+writing: debug/nodes/1/ranges/298.json
+writing: debug/nodes/1/ranges/299.json
+writing: debug/nodes/1/ranges/320.json
+writing: debug/nodes/1/ranges/321.json
+writing: debug/nodes/1/ranges/324.json
+writing: debug/nodes/1/ranges/325.json
+writing: debug/nodes/1/ranges/356.json
+writing: debug/nodes/1/ranges/358.json
+writing: debug/nodes/1/ranges/361.json
+writing: debug/nodes/1/ranges/362.json
+writing: debug/nodes/1/ranges/363.json
+writing: debug/nodes/1/ranges/376.json
+writing: debug/nodes/2/status.json
+using SQL connection URL for node 2: postgresql://root@192.168.1.43:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+retrieving SQL data for crdb_internal.feature_usage... writing: debug/nodes/2/crdb_internal.feature_usage.txt
+retrieving SQL data for crdb_internal.gossip_alerts... writing: debug/nodes/2/crdb_internal.gossip_alerts.txt
+retrieving SQL data for crdb_internal.gossip_liveness... writing: debug/nodes/2/crdb_internal.gossip_liveness.txt
+retrieving SQL data for crdb_internal.gossip_network... writing: debug/nodes/2/crdb_internal.gossip_network.txt
+retrieving SQL data for crdb_internal.gossip_nodes... writing: debug/nodes/2/crdb_internal.gossip_nodes.txt
+retrieving SQL data for crdb_internal.leases... writing: debug/nodes/2/crdb_internal.leases.txt
+retrieving SQL data for crdb_internal.node_build_info... writing: debug/nodes/2/crdb_internal.node_build_info.txt
+retrieving SQL data for crdb_internal.node_metrics... writing: debug/nodes/2/crdb_internal.node_metrics.txt
+retrieving SQL data for crdb_internal.node_queries... writing: debug/nodes/2/crdb_internal.node_queries.txt
+retrieving SQL data for crdb_internal.node_runtime_info... writing: debug/nodes/2/crdb_internal.node_runtime_info.txt
+retrieving SQL data for crdb_internal.node_sessions... writing: debug/nodes/2/crdb_internal.node_sessions.txt
+retrieving SQL data for crdb_internal.node_statement_statistics... writing: debug/nodes/2/crdb_internal.node_statement_statistics.txt
+retrieving SQL data for crdb_internal.node_transaction_statistics... writing: debug/nodes/2/crdb_internal.node_transaction_statistics.txt
+retrieving SQL data for crdb_internal.node_transactions... writing: debug/nodes/2/crdb_internal.node_transactions.txt
+retrieving SQL data for crdb_internal.node_txn_stats... writing: debug/nodes/2/crdb_internal.node_txn_stats.txt
+requesting data for debug/nodes/2/details... writing: debug/nodes/2/details.json
+requesting data for debug/nodes/2/gossip... writing: debug/nodes/2/gossip.json
+requesting data for debug/nodes/2/enginestats... writing: debug/nodes/2/enginestats.json
+requesting stacks for node 2... writing: debug/nodes/2/stacks.txt
+requesting threads for node 2... writing: debug/nodes/2/threads.txt
+requesting heap profile for node 2... writing: debug/nodes/2/heap.pprof
+requesting heap files for node 2... 250 found
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T14_13_19.251.246436096.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T15_15_49.150.229827456.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T15_16_49.148.231314256.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T15_17_49.146.235568464.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T15_18_59.144.244826808.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T15_29_49.126.247329664.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T16_33_19.027.233505960.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T16_36_39.022.234201112.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T16_41_09.015.237928680.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T16_42_09.014.245857184.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T17_39_08.920.246345968.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T18_41_28.868.241706736.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T18_45_58.861.242256200.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T18_46_58.859.245015712.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T18_47_58.857.245706376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T19_10_08.821.246026376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T20_10_18.720.159254712.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T20_10_28.720.192618136.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T20_10_38.719.224461360.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T20_11_48.717.238745816.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T20_12_48.715.245446688.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T21_12_58.614.237860744.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T21_13_58.612.242784864.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T21_24_08.595.242920472.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T21_25_08.593.246538256.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T22_27_28.486.232925184.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T22_30_48.481.233249792.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T22_31_48.478.233561856.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T22_32_58.476.241577424.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T22_33_58.476.245923984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T23_34_08.375.236739864.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T23_35_08.374.241212288.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T23_36_18.373.244762448.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-16T23_37_18.371.247261792.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T00_37_38.271.204973480.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T00_37_48.270.237534288.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T00_38_48.269.244158696.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T00_55_08.241.244243536.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T00_56_08.239.248520376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T01_56_38.143.211491312.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T01_57_38.142.219196320.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T01_58_38.140.221902024.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T01_59_48.139.236888552.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T02_00_48.137.250775960.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T03_01_28.039.236173256.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T03_02_28.038.242328512.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T03_07_58.030.244564456.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T03_08_58.028.245987184.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T03_10_08.026.250084328.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T04_13_47.933.239484512.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T04_13_57.930.242555072.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T04_23_57.914.246086768.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T05_18_47.833.246087848.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T05_19_47.831.247664000.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T06_19_57.739.233041392.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T06_22_37.735.239836912.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T06_23_37.733.246525352.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T07_23_47.636.204308192.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T07_23_57.636.236970592.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T07_24_57.634.245347048.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T08_20_27.558.245795840.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T08_21_27.557.251956112.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T09_22_57.500.221520040.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T09_23_57.497.222313480.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T09_25_07.495.239163552.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T09_26_07.493.247164616.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T09_27_17.491.257809704.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T10_27_27.407.245465896.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T10_58_07.358.245478464.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T11_07_07.347.245872752.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T11_08_07.345.246870448.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T12_16_37.236.241745200.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T12_17_37.234.244974392.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T12_22_07.227.245285704.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T12_23_07.225.248162416.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T12_23_37.228.259421496.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T13_23_47.130.241720344.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T13_24_47.129.247326928.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T14_25_07.056.225413376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T14_26_07.055.226042016.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T14_26_57.054.240552224.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T14_27_57.052.244624752.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T15_11_27.013.246234560.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T16_21_36.900.237463600.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T16_22_36.898.241400216.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T16_24_46.894.244755832.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T16_25_46.893.246747656.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T17_04_06.829.247104272.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T18_04_26.728.237869184.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T18_05_26.726.243361928.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T18_11_06.717.244126040.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T18_21_26.700.244622848.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T18_22_26.698.247865888.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T19_24_56.598.222164704.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T19_26_06.596.235905424.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T19_27_06.595.242975824.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T19_51_46.557.243549176.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T19_52_46.555.247919984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T20_53_06.459.165132200.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T20_53_16.459.196186248.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T20_53_26.459.228973336.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T20_54_26.457.235321912.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T20_55_26.455.245628616.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T21_55_56.356.215428808.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T21_56_26.356.227268296.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T21_57_16.354.228917424.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T21_58_26.353.238163296.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T21_59_26.352.245498840.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T22_59_36.254.233762352.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T23_00_36.253.238944920.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T23_03_56.248.239673160.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T23_04_56.247.247140456.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-17T23_40_16.191.247576176.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T00_40_36.112.233030120.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T00_41_36.113.233800536.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T00_43_46.108.235613336.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T00_46_26.104.238654752.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T00_47_26.102.245574632.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T01_48_36.073.232537624.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T01_49_26.073.237847824.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T01_50_26.071.243033992.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T02_33_06.013.243280416.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T02_34_06.013.251216984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T03_37_25.914.231540672.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T03_38_25.912.232528016.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T03_39_25.911.236585192.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T03_40_25.910.238937712.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T03_41_25.908.250753856.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T04_41_45.818.225117920.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T04_42_45.816.228090696.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T04_43_35.815.230823232.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T04_44_35.813.245196408.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T04_45_35.812.253257544.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T05_50_45.721.227145112.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T05_51_55.719.242995448.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T06_01_25.706.243470784.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T06_04_35.701.244494096.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T06_05_35.700.248139560.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T07_05_45.607.195495240.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T07_05_55.607.229207600.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T07_06_55.606.243393000.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T07_30_15.576.247763992.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T07_31_15.574.252549176.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T08_32_55.494.242309976.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T08_47_05.476.244524416.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T08_54_35.465.245129896.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T09_05_25.449.246095768.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T09_06_25.448.249916408.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T10_08_45.357.238191592.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T10_09_45.355.244235032.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T10_48_35.303.245118968.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T10_52_25.298.246909640.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T10_53_25.297.254486160.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T11_54_35.204.215728672.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T11_55_35.202.221674392.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T11_56_35.200.224160728.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T11_57_45.199.241523976.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T11_58_45.197.247331688.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T12_58_55.102.225808536.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T13_00_05.100.242584144.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T13_01_05.099.248222096.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T14_01_25.003.211532848.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T14_01_35.001.242697624.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T14_02_35.000.243954160.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T14_10_14.987.245784584.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T14_11_14.986.249076376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T15_11_34.888.245287552.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T15_12_34.886.246876712.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T15_24_54.868.247905624.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T15_25_54.865.248222920.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T15_27_04.863.257672496.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T16_28_14.772.226749152.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T16_30_24.768.234961880.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T16_31_24.767.241020216.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T16_32_34.765.244431568.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T16_33_34.763.247056488.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T17_35_04.669.230231648.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T17_37_54.667.232049272.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T17_38_54.666.237523576.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T17_42_14.664.240427288.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T17_43_14.664.245889864.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T18_45_54.621.238081120.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T18_48_54.620.238528840.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T18_49_54.619.245480544.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T18_54_24.616.246018216.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T18_55_24.615.253171104.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T21_26_04.368.247517008.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T21_40_04.343.248529072.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T22_25_04.261.251682120.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T22_25_14.262.307898032.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T22_25_34.261.325624840.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T23_25_44.203.225944048.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T23_26_24.203.263929472.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T23_27_14.203.264201200.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T23_27_54.202.264350576.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-18T23_43_24.183.283640176.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T00_43_34.127.258796560.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T00_47_24.124.266248688.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T00_49_34.123.266274456.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T00_53_24.120.266651048.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T02_21_24.028.270747672.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T03_04_03.981.273180360.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T03_04_13.983.277828872.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T03_05_23.981.278852984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T03_23_53.959.289899904.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T04_24_03.896.255306512.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T04_33_33.883.258944808.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T04_45_13.870.268214792.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T05_03_43.852.287020120.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T06_11_03.777.257672224.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T06_14_23.774.260580504.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T06_30_03.753.261181664.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T06_34_03.748.262694000.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T06_44_23.735.270653088.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T07_44_33.666.156404368.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T07_44_53.666.262349984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T08_13_43.632.266050040.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T08_54_43.590.281458376.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T09_28_13.545.287309984.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T10_28_33.475.261173504.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T10_29_23.473.263759328.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T10_35_13.468.265247856.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T10_38_13.466.338061440.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T10_38_33.467.352333392.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T11_42_13.394.262355592.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T11_43_03.392.264428784.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T11_54_13.448.266399496.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T12_41_03.384.341002352.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T12_41_13.383.347486488.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T13_42_53.322.252391336.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T13_43_43.321.260340016.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T13_49_33.314.264581648.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T13_53_43.307.266944944.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T14_18_13.279.277623184.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T15_18_23.214.261867216.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T15_18_53.213.264239616.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T16_19_13.117.239896152.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T16_19_43.117.250194128.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T16_24_53.108.250325280.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T16_35_53.090.250778488.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T16_36_23.089.254543864.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T17_36_32.981.142574616.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T17_36_42.980.195744656.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T17_36_52.980.248340288.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T17_37_22.979.262279528.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T18_37_32.886.198183136.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T18_38_12.885.235988896.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T18_38_42.884.244940456.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T18_40_22.882.246133320.pprof
+writing: debug/nodes/2/heapprof/memprof.2020-11-19T18_40_52.881.250477472.pprof
+requesting goroutine files for node 2... 1 found
+writing: debug/nodes/2/goroutines/goroutine_dump.2020-11-10T01_21_36.702.double_since_last_dump.000001506.txt.gz
+requesting log files list... 31 found
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-10T01_01_07Z.001214.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-10T01_01_07Z.001214.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-13T01_47_46Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-13T01_47_46Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-14T05_39_24Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-14T05_39_24Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-15T09_29_51Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-15T09_29_51Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-16T13_19_39Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-16T13_19_39Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-17T17_09_16Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-17T17_09_16Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-18T20_58_54Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-18T20_58_54Z.004971.log
+requesting log file cockroach.nvmedb3.cockroachdb.2020-11-19T16_33_03Z.004971.log... writing: debug/nodes/2/logs/cockroach.nvmedb3.cockroachdb.2020-11-19T16_33_03Z.004971.log
+requesting log file cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T01_01_07Z.001214.log... writing: debug/nodes/2/logs/cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T01_01_07Z.001214.log
+requesting log file cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log... writing: debug/nodes/2/logs/cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log
+requesting log file cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log... writing: debug/nodes/2/logs/cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log
+requesting log file cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log... writing: debug/nodes/2/logs/cockroach-stderr.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log
+requesting log file cockroach-stderr.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log... writing: debug/nodes/2/logs/cockroach-stderr.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T07_30_48Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T07_30_48Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T10_11_59Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T10_11_59Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T10_59_13Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T10_59_13Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T11_43_14Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T11_43_14Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T12_28_51Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T12_28_51Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T13_13_57Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T13_13_57Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T14_00_06Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T14_00_06Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T14_47_57Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T14_47_57Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T15_35_10Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T15_35_10Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T16_26_31Z.001214.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T16_26_31Z.001214.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T16_35_25Z.009471.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T23_21_08Z.016275.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-10T23_21_38Z.016315.log
+requesting log file cockroach-pebble.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log... writing: debug/nodes/2/logs/cockroach-pebble.nvmedb3.cockroachdb.2020-11-11T21_53_47Z.004971.log
+requesting ranges... 299 found
+writing: debug/nodes/2/ranges/1.json
+writing: debug/nodes/2/ranges/2.json
+writing: debug/nodes/2/ranges/3.json
+writing: debug/nodes/2/ranges/4.json
+writing: debug/nodes/2/ranges/5.json
+writing: debug/nodes/2/ranges/6.json
+writing: debug/nodes/2/ranges/7.json
+writing: debug/nodes/2/ranges/8.json
+writing: debug/nodes/2/ranges/9.json
+writing: debug/nodes/2/ranges/10.json
+writing: debug/nodes/2/ranges/11.json
+writing: debug/nodes/2/ranges/12.json
+writing: debug/nodes/2/ranges/13.json
+writing: debug/nodes/2/ranges/14.json
+writing: debug/nodes/2/ranges/15.json
+writing: debug/nodes/2/ranges/16.json
+writing: debug/nodes/2/ranges/17.json
+writing: debug/nodes/2/ranges/18.json
+writing: debug/nodes/2/ranges/19.json
+writing: debug/nodes/2/ranges/20.json
+writing: debug/nodes/2/ranges/21.json
+writing: debug/nodes/2/ranges/22.json
+writing: debug/nodes/2/ranges/23.json
+writing: debug/nodes/2/ranges/24.json
+writing: debug/nodes/2/ranges/25.json
+writing: debug/nodes/2/ranges/26.json
+writing: debug/nodes/2/ranges/27.json
+writing: debug/nodes/2/ranges/28.json
+writing: debug/nodes/2/ranges/29.json
+writing: debug/nodes/2/ranges/30.json
+writing: debug/nodes/2/ranges/31.json
+writing: debug/nodes/2/ranges/32.json
+writing: debug/nodes/2/ranges/33.json
+writing: debug/nodes/2/ranges/34.json
+writing: debug/nodes/2/ranges/35.json
+writing: debug/nodes/2/ranges/36.json
+writing: debug/nodes/2/ranges/37.json
+writing: debug/nodes/2/ranges/38.json
+writing: debug/nodes/2/ranges/39.json
+writing: debug/nodes/2/ranges/40.json
+writing: debug/nodes/2/ranges/41.json
+writing: debug/nodes/2/ranges/42.json
+writing: debug/nodes/2/ranges/43.json
+writing: debug/nodes/2/ranges/44.json
+writing: debug/nodes/2/ranges/45.json
+writing: debug/nodes/2/ranges/46.json
+writing: debug/nodes/2/ranges/47.json
+writing: debug/nodes/2/ranges/48.json
+writing: debug/nodes/2/ranges/49.json
+writing: debug/nodes/2/ranges/50.json
+writing: debug/nodes/2/ranges/51.json
+writing: debug/nodes/2/ranges/52.json
+writing: debug/nodes/2/ranges/53.json
+writing: debug/nodes/2/ranges/54.json
+writing: debug/nodes/2/ranges/55.json
+writing: debug/nodes/2/ranges/56.json
+writing: debug/nodes/2/ranges/57.json
+writing: debug/nodes/2/ranges/58.json
+writing: debug/nodes/2/ranges/60.json
+writing: debug/nodes/2/ranges/61.json
+writing: debug/nodes/2/ranges/62.json
+writing: debug/nodes/2/ranges/63.json
+writing: debug/nodes/2/ranges/64.json
+writing: debug/nodes/2/ranges/65.json
+writing: debug/nodes/2/ranges/66.json
+writing: debug/nodes/2/ranges/67.json
+writing: debug/nodes/2/ranges/68.json
+writing: debug/nodes/2/ranges/69.json
+writing: debug/nodes/2/ranges/70.json
+writing: debug/nodes/2/ranges/71.json
+writing: debug/nodes/2/ranges/72.json
+writing: debug/nodes/2/ranges/73.json
+writing: debug/nodes/2/ranges/74.json
+writing: debug/nodes/2/ranges/75.json
+writing: debug/nodes/2/ranges/76.json
+writing: debug/nodes/2/ranges/77.json
+writing: debug/nodes/2/ranges/78.json
+writing: debug/nodes/2/ranges/79.json
+writing: debug/nodes/2/ranges/80.json
+writing: debug/nodes/2/ranges/81.json
+writing: debug/nodes/2/ranges/82.json
+writing: debug/nodes/2/ranges/83.json
+writing: debug/nodes/2/ranges/84.json
+writing: debug/nodes/2/ranges/85.json
+writing: debug/nodes/2/ranges/86.json
+writing: debug/nodes/2/ranges/87.json
+writing: debug/nodes/2/ranges/88.json
+writing: debug/nodes/2/ranges/89.json
+writing: debug/nodes/2/ranges/90.json
+writing: debug/nodes/2/ranges/92.json
+writing: debug/nodes/2/ranges/94.json
+writing: debug/nodes/2/ranges/95.json
+writing: debug/nodes/2/ranges/96.json
+writing: debug/nodes/2/ranges/97.json
+writing: debug/nodes/2/ranges/98.json
+writing: debug/nodes/2/ranges/99.json
+writing: debug/nodes/2/ranges/100.json
+writing: debug/nodes/2/ranges/101.json
+writing: debug/nodes/2/ranges/102.json
+writing: debug/nodes/2/ranges/103.json
+writing: debug/nodes/2/ranges/104.json
+writing: debug/nodes/2/ranges/105.json
+writing: debug/nodes/2/ranges/106.json
+writing: debug/nodes/2/ranges/107.json
+writing: debug/nodes/2/ranges/108.json
+writing: debug/nodes/2/ranges/109.json
+writing: debug/nodes/2/ranges/110.json
+writing: debug/nodes/2/ranges/111.json
+writing: debug/nodes/2/ranges/112.json
+writing: debug/nodes/2/ranges/113.json
+writing: debug/nodes/2/ranges/114.json
+writing: debug/nodes/2/ranges/115.json
+writing: debug/nodes/2/ranges/116.json
+writing: debug/nodes/2/ranges/117.json
+writing: debug/nodes/2/ranges/118.json
+writing: debug/nodes/2/ranges/119.json
+writing: debug/nodes/2/ranges/120.json
+writing: debug/nodes/2/ranges/121.json
+writing: debug/nodes/2/ranges/122.json
+writing: debug/nodes/2/ranges/123.json
+writing: debug/nodes/2/ranges/124.json
+writing: debug/nodes/2/ranges/125.json
+writing: debug/nodes/2/ranges/126.json
+writing: debug/nodes/2/ranges/127.json
+writing: debug/nodes/2/ranges/128.json
+writing: debug/nodes/2/ranges/129.json
+writing: debug/nodes/2/ranges/130.json
+writing: debug/nodes/2/ranges/131.json
+writing: debug/nodes/2/ranges/132.json
+writing: debug/nodes/2/ranges/133.json
+writing: debug/nodes/2/ranges/134.json
+writing: debug/nodes/2/ranges/135.json
+writing: debug/nodes/2/ranges/136.json
+writing: debug/nodes/2/ranges/137.json
+writing: debug/nodes/2/ranges/138.json
+writing: debug/nodes/2/ranges/139.json
+writing: debug/nodes/2/ranges/140.json
+writing: debug/nodes/2/ranges/141.json
+writing: debug/nodes/2/ranges/142.json
+writing: debug/nodes/2/ranges/143.json
+writing: debug/nodes/2/ranges/144.json
+writing: debug/nodes/2/ranges/145.json
+writing: debug/nodes/2/ranges/146.json
+writing: debug/nodes/2/ranges/147.json
+writing: debug/nodes/2/ranges/148.json
+writing: debug/nodes/2/ranges/149.json
+writing: debug/nodes/2/ranges/150.json
+writing: debug/nodes/2/ranges/151.json
+writing: debug/nodes/2/ranges/153.json
+writing: debug/nodes/2/ranges/154.json
+writing: debug/nodes/2/ranges/155.json
+writing: debug/nodes/2/ranges/156.json
+writing: debug/nodes/2/ranges/157.json
+writing: debug/nodes/2/ranges/158.json
+writing: debug/nodes/2/ranges/159.json
+writing: debug/nodes/2/ranges/160.json
+writing: debug/nodes/2/ranges/161.json
+writing: debug/nodes/2/ranges/162.json
+writing: debug/nodes/2/ranges/163.json
+writing: debug/nodes/2/ranges/164.json
+writing: debug/nodes/2/ranges/165.json
+writing: debug/nodes/2/ranges/166.json
+writing: debug/nodes/2/ranges/167.json
+writing: debug/nodes/2/ranges/168.json
+writing: debug/nodes/2/ranges/169.json
+writing: debug/nodes/2/ranges/170.json
+writing: debug/nodes/2/ranges/171.json
+writing: debug/nodes/2/ranges/172.json
+writing: debug/nodes/2/ranges/173.json
+writing: debug/nodes/2/ranges/174.json
+writing: debug/nodes/2/ranges/175.json
+writing: debug/nodes/2/ranges/176.json
+writing: debug/nodes/2/ranges/177.json
+writing: debug/nodes/2/ranges/178.json
+writing: debug/nodes/2/ranges/179.json
+writing: debug/nodes/2/ranges/180.json
+writing: debug/nodes/2/ranges/181.json
+writing: debug/nodes/2/ranges/182.json
+writing: debug/nodes/2/ranges/183.json
+writing: debug/nodes/2/ranges/184.json
+writing: debug/nodes/2/ranges/185.json
+writing: debug/nodes/2/ranges/186.json
+writing: debug/nodes/2/ranges/187.json
+writing: debug/nodes/2/ranges/188.json
+writing: debug/nodes/2/ranges/189.json
+writing: debug/nodes/2/ranges/190.json
+writing: debug/nodes/2/ranges/191.json
+writing: debug/nodes/2/ranges/192.json
+writing: debug/nodes/2/ranges/193.json
+writing: debug/nodes/2/ranges/194.json
+writing: debug/nodes/2/ranges/195.json
+writing: debug/nodes/2/ranges/196.json
+writing: debug/nodes/2/ranges/197.json
+writing: debug/nodes/2/ranges/198.json
+writing: debug/nodes/2/ranges/199.json
+writing: debug/nodes/2/ranges/200.json
+writing: debug/nodes/2/ranges/201.json
+writing: debug/nodes/2/ranges/202.json
+writing: debug/nodes/2/ranges/203.json
+writing: debug/nodes/2/ranges/204.json
+writing: debug/nodes/2/ranges/205.json
+writing: debug/nodes/2/ranges/206.json
+writing: debug/nodes/2/ranges/207.json
+writing: debug/nodes/2/ranges/208.json
+writing: debug/nodes/2/ranges/209.json
+writing: debug/nodes/2/ranges/210.json
+writing: debug/nodes/2/ranges/211.json
+writing: debug/nodes/2/ranges/212.json
+writing: debug/nodes/2/ranges/213.json
+writing: debug/nodes/2/ranges/214.json
+writing: debug/nodes/2/ranges/215.json
+writing: debug/nodes/2/ranges/216.json
+writing: debug/nodes/2/ranges/217.json
+writing: debug/nodes/2/ranges/218.json
+writing: debug/nodes/2/ranges/219.json
+writing: debug/nodes/2/ranges/220.json
+writing: debug/nodes/2/ranges/221.json
+writing: debug/nodes/2/ranges/222.json
+writing: debug/nodes/2/ranges/223.json
+writing: debug/nodes/2/ranges/224.json
+writing: debug/nodes/2/ranges/225.json
+writing: debug/nodes/2/ranges/226.json
+writing: debug/nodes/2/ranges/227.json
+writing: debug/nodes/2/ranges/228.json
+writing: debug/nodes/2/ranges/229.json
+writing: debug/nodes/2/ranges/230.json
+writing: debug/nodes/2/ranges/231.json
+writing: debug/nodes/2/ranges/232.json
+writing: debug/nodes/2/ranges/233.json
+writing: debug/nodes/2/ranges/234.json
+writing: debug/nodes/2/ranges/235.json
+writing: debug/nodes/2/ranges/236.json
+writing: debug/nodes/2/ranges/237.json
+writing: debug/nodes/2/ranges/238.json
+writing: debug/nodes/2/ranges/239.json
+writing: debug/nodes/2/ranges/240.json
+writing: debug/nodes/2/ranges/241.json
+writing: debug/nodes/2/ranges/242.json
+writing: debug/nodes/2/ranges/243.json
+writing: debug/nodes/2/ranges/244.json
+writing: debug/nodes/2/ranges/245.json
+writing: debug/nodes/2/ranges/246.json
+writing: debug/nodes/2/ranges/247.json
+writing: debug/nodes/2/ranges/248.json
+writing: debug/nodes/2/ranges/249.json
+writing: debug/nodes/2/ranges/250.json
+writing: debug/nodes/2/ranges/251.json
+writing: debug/nodes/2/ranges/252.json
+writing: debug/nodes/2/ranges/253.json
+writing: debug/nodes/2/ranges/254.json
+writing: debug/nodes/2/ranges/255.json
+writing: debug/nodes/2/ranges/256.json
+writing: debug/nodes/2/ranges/257.json
+writing: debug/nodes/2/ranges/258.json
+writing: debug/nodes/2/ranges/259.json
+writing: debug/nodes/2/ranges/260.json
+writing: debug/nodes/2/ranges/261.json
+writing: debug/nodes/2/ranges/262.json
+writing: debug/nodes/2/ranges/263.json
+writing: debug/nodes/2/ranges/264.json
+writing: debug/nodes/2/ranges/265.json
+writing: debug/nodes/2/ranges/266.json
+writing: debug/nodes/2/ranges/267.json
+writing: debug/nodes/2/ranges/268.json
+writing: debug/nodes/2/ranges/269.json
+writing: debug/nodes/2/ranges/270.json
+writing: debug/nodes/2/ranges/271.json
+writing: debug/nodes/2/ranges/272.json
+writing: debug/nodes/2/ranges/276.json
+writing: debug/nodes/2/ranges/277.json
+writing: debug/nodes/2/ranges/278.json
+writing: debug/nodes/2/ranges/279.json
+writing: debug/nodes/2/ranges/280.json
+writing: debug/nodes/2/ranges/281.json
+writing: debug/nodes/2/ranges/282.json
+writing: debug/nodes/2/ranges/286.json
+writing: debug/nodes/2/ranges/287.json
+writing: debug/nodes/2/ranges/288.json
+writing: debug/nodes/2/ranges/289.json
+writing: debug/nodes/2/ranges/290.json
+writing: debug/nodes/2/ranges/291.json
+writing: debug/nodes/2/ranges/292.json
+writing: debug/nodes/2/ranges/293.json
+writing: debug/nodes/2/ranges/294.json
+writing: debug/nodes/2/ranges/295.json
+writing: debug/nodes/2/ranges/296.json
+writing: debug/nodes/2/ranges/297.json
+writing: debug/nodes/2/ranges/298.json
+writing: debug/nodes/2/ranges/299.json
+writing: debug/nodes/2/ranges/320.json
+writing: debug/nodes/2/ranges/321.json
+writing: debug/nodes/2/ranges/324.json
+writing: debug/nodes/2/ranges/325.json
+writing: debug/nodes/2/ranges/356.json
+writing: debug/nodes/2/ranges/358.json
+writing: debug/nodes/2/ranges/361.json
+writing: debug/nodes/2/ranges/362.json
+writing: debug/nodes/2/ranges/363.json
+writing: debug/nodes/2/ranges/376.json
+writing: debug/nodes/3/status.json
+using SQL connection URL for node 3: postgresql://root@192.168.1.159:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+retrieving SQL data for crdb_internal.feature_usage... writing: debug/nodes/3/crdb_internal.feature_usage.txt
+retrieving SQL data for crdb_internal.gossip_alerts... writing: debug/nodes/3/crdb_internal.gossip_alerts.txt
+retrieving SQL data for crdb_internal.gossip_liveness... writing: debug/nodes/3/crdb_internal.gossip_liveness.txt
+retrieving SQL data for crdb_internal.gossip_network... writing: debug/nodes/3/crdb_internal.gossip_network.txt
+retrieving SQL data for crdb_internal.gossip_nodes... writing: debug/nodes/3/crdb_internal.gossip_nodes.txt
+retrieving SQL data for crdb_internal.leases... writing: debug/nodes/3/crdb_internal.leases.txt
+retrieving SQL data for crdb_internal.node_build_info... writing: debug/nodes/3/crdb_internal.node_build_info.txt
+retrieving SQL data for crdb_internal.node_metrics... writing: debug/nodes/3/crdb_internal.node_metrics.txt
+retrieving SQL data for crdb_internal.node_queries... writing: debug/nodes/3/crdb_internal.node_queries.txt
+retrieving SQL data for crdb_internal.node_runtime_info... writing: debug/nodes/3/crdb_internal.node_runtime_info.txt
+retrieving SQL data for crdb_internal.node_sessions... writing: debug/nodes/3/crdb_internal.node_sessions.txt
+retrieving SQL data for crdb_internal.node_statement_statistics... writing: debug/nodes/3/crdb_internal.node_statement_statistics.txt
+retrieving SQL data for crdb_internal.node_transaction_statistics... writing: debug/nodes/3/crdb_internal.node_transaction_statistics.txt
+retrieving SQL data for crdb_internal.node_transactions... writing: debug/nodes/3/crdb_internal.node_transactions.txt
+retrieving SQL data for crdb_internal.node_txn_stats... writing: debug/nodes/3/crdb_internal.node_txn_stats.txt
+requesting data for debug/nodes/3/details... writing: debug/nodes/3/details.json
+requesting data for debug/nodes/3/gossip... writing: debug/nodes/3/gossip.json
+requesting data for debug/nodes/3/enginestats... writing: debug/nodes/3/enginestats.json
+requesting stacks for node 3... writing: debug/nodes/3/stacks.txt
+requesting threads for node 3... writing: debug/nodes/3/threads.txt
+requesting heap profile for node 3... writing: debug/nodes/3/heap.pprof
+requesting heap files for node 3... 221 found
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T01_56_45.501.245931040.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T01_57_35.501.247937480.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T03_00_05.527.230777904.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T03_00_55.528.240935320.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T03_01_45.528.244925640.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T03_17_25.534.244962584.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T03_18_15.534.251561744.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T04_20_45.556.232208288.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T04_22_35.557.241553880.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T04_23_25.557.248514496.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T04_24_15.557.250808080.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T04_55_25.573.266423288.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T05_56_25.602.238231392.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T05_57_05.603.238367016.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T06_01_25.606.239139272.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T06_02_15.606.249058360.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T06_56_25.639.249089032.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T07_56_25.687.234558264.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T07_57_15.687.241338024.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T07_58_05.687.245586480.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T08_58_55.723.247547400.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T08_59_45.724.247795584.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T09_20_25.735.248505968.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T09_23_05.738.250475784.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T09_23_55.738.253600920.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T10_23_55.769.152356904.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T10_24_05.769.189135784.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T10_24_45.769.192089864.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T10_24_55.770.228852744.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T10_25_45.770.251521528.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T11_25_45.797.160308616.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T11_25_55.797.197770368.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T11_26_05.797.234691312.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T11_26_55.798.248825080.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T12_30_15.816.238300912.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T12_33_35.816.238401136.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T12_34_25.816.250875488.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T13_16_55.829.251647128.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T13_17_45.828.254009856.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T14_17_45.848.200826584.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T14_17_55.848.238694232.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T14_18_45.849.250811704.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T15_20_35.873.229857872.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T15_21_25.873.235135528.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T15_22_15.873.243678984.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T15_37_35.878.244311200.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T15_38_25.879.253250968.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T16_38_45.902.232629504.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T16_42_15.903.241892112.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T16_43_05.904.245177168.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T16_44_55.905.245229352.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T16_45_45.905.247476736.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T17_46_35.924.233251432.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T17_47_25.925.244385512.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T17_54_35.927.246661280.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T17_55_25.926.247944256.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T17_56_15.926.251081496.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T18_58_15.947.226770880.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T19_00_05.948.237598168.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T19_04_25.949.240026504.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T19_05_15.949.246203736.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T19_06_05.950.249156840.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T20_06_05.967.229388944.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T20_06_55.967.242299464.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T20_07_45.969.246483680.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T20_46_45.979.246921464.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T20_47_35.978.248537584.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T21_47_35.998.193644112.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T21_47_45.998.232734376.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T21_48_35.999.243266024.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T21_59_26.005.244284472.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T22_00_16.007.250191376.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T23_00_16.033.166320552.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T23_00_26.033.203896192.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T23_00_36.033.241027056.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T23_01_26.033.245792752.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-17T23_02_16.033.251194304.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T00_03_56.064.231978120.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T00_04_46.063.237507064.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T00_05_36.063.243611312.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T00_07_26.065.249687504.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T00_08_16.066.250755664.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T01_10_16.079.231148496.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T01_11_06.080.236045552.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T01_15_36.080.239959880.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T01_16_26.082.247864280.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T01_17_16.080.251888672.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T02_17_16.109.236670752.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T02_18_06.109.246984128.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T02_33_16.120.248073128.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T02_34_06.122.255490536.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T03_35_16.143.234565728.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T03_36_06.142.245359784.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T03_58_06.150.246585168.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T03_58_56.151.252620096.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T03_59_46.151.257096544.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T04_59_46.183.198410888.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T04_59_56.183.234898800.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T05_00_46.183.247174808.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T05_38_46.201.247963008.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T05_39_36.201.250668208.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T06_45_16.237.243494264.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T06_50_26.240.246008928.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T07_29_16.258.246917936.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T07_30_06.260.256244920.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T07_30_56.260.258347824.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T08_31_06.294.183456928.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T08_31_16.294.220703952.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T08_32_06.295.226364872.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T08_32_56.294.248907392.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T08_59_56.310.248914952.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T10_01_56.354.237801648.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T10_02_46.354.244971544.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T10_16_56.362.245241160.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T10_17_46.363.249328928.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T10_18_36.364.256916000.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T11_21_26.397.231388136.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T11_22_16.397.233576120.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T11_24_16.400.236858864.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T11_25_06.399.247999216.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T11_25_56.400.248778680.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T12_26_16.416.233078256.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T12_27_06.415.243554016.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T12_43_56.420.244479568.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T12_44_46.420.250525248.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T12_45_36.420.254368288.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T13_45_36.438.163356824.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T13_45_46.438.205583160.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T13_45_56.438.243699712.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T13_46_46.439.251467328.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T14_46_46.461.220380792.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T14_47_36.462.220755000.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T14_47_56.469.239005488.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T14_50_36.468.246507904.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T14_51_26.468.249512424.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T15_51_26.487.183533600.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T15_51_36.487.222373864.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T15_52_26.487.229215784.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T15_53_16.486.236580320.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T15_54_06.487.251446232.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T16_56_56.505.229469152.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T16_57_46.505.239922016.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T16_58_36.506.249411208.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T17_10_26.509.250236568.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T17_23_46.513.253006280.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T18_23_46.531.237592432.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T18_24_36.532.249033744.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T18_25_26.532.254176992.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T19_25_36.553.181168408.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T19_25_46.553.219165488.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T19_26_36.553.221922984.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T19_27_26.553.233546152.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T19_28_16.553.245029304.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T20_29_16.573.214365744.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T20_29_36.573.223293568.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T20_29_46.573.230621096.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T20_31_36.575.242943112.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T20_32_26.575.254402872.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T21_32_46.597.240015184.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T21_33_36.597.250103296.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T22_24_16.610.266543048.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T22_24_36.611.290490128.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T22_45_56.632.304589664.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T23_45_56.693.209567400.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T23_46_06.694.253307976.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T23_47_36.696.260490928.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-18T23_51_36.701.265786704.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T00_14_06.728.271096584.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T01_53_26.832.260770248.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T02_18_26.860.263447432.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T02_24_36.866.276885656.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T03_10_36.914.277459016.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T03_20_16.922.281622880.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T04_20_16.981.244082624.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T04_20_56.982.258990720.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T04_25_36.986.260382992.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T04_26_16.987.270987376.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T05_31_07.060.261992048.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T05_40_07.069.262761816.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T05_40_47.072.263721456.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T06_24_27.113.264483400.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T06_36_57.124.301768920.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T07_38_27.182.244673352.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T07_39_37.183.251988376.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T07_41_57.185.261381792.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T07_43_47.189.265417080.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T08_43_37.248.267028864.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T09_53_17.317.264821088.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T09_57_37.321.266608968.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T10_12_57.337.277283224.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T10_38_27.355.288255208.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T10_39_07.357.347760544.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T11_47_17.419.266754560.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T11_49_37.420.273702704.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T12_40_57.467.289226816.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T12_41_27.467.293325304.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T12_42_37.467.304356904.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T13_42_37.520.256524616.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T13_44_17.521.261589472.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T13_44_57.521.265580896.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T13_52_27.530.286673592.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T14_52_27.596.163358080.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T14_52_47.596.235382384.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T14_53_17.597.260817064.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T14_58_57.603.262654656.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T14_59_27.603.280523440.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T15_59_37.635.230278192.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T16_00_17.635.232379120.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T16_00_57.635.238710344.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T16_01_37.636.260340448.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T16_02_17.636.262281056.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T17_04_17.665.226870200.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T17_04_57.666.242070840.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T17_05_37.667.254577808.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T17_12_07.669.255847904.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T17_12_47.669.267502888.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T18_14_27.694.252358456.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T18_17_47.690.255042416.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T18_18_27.690.257903600.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T18_19_07.691.260949632.pprof
+writing: debug/nodes/3/heapprof/memprof.2020-11-19T18_19_47.690.263476640.pprof
+requesting goroutine files for node 3... 0 found
+requesting log files list... 27 found
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-10T01_00_59Z.001213.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-10T01_00_59Z.001213.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-13T02_02_02Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-13T02_02_02Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-14T06_10_39Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-14T06_10_39Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-15T10_18_34Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-15T10_18_34Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-16T14_25_45Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-16T14_25_45Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-17T18_32_55Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-17T18_32_55Z.009990.log
+requesting log file cockroach.nvmedb2.cockroachdb.2020-11-18T22_39_46Z.009990.log... writing: debug/nodes/3/logs/cockroach.nvmedb2.cockroachdb.2020-11-18T22_39_46Z.009990.log
+requesting log file cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T01_00_59Z.001213.log... writing: debug/nodes/3/logs/cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T01_00_59Z.001213.log
+requesting log file cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log... writing: debug/nodes/3/logs/cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log
+requesting log file cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log... writing: debug/nodes/3/logs/cockroach-stderr.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log
+requesting log file cockroach-stderr.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log... writing: debug/nodes/3/logs/cockroach-stderr.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T07_03_16Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T07_03_16Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T09_59_57Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T09_59_57Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T10_48_33Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T10_48_33Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T11_32_52Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T11_32_52Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T12_18_49Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T12_18_49Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T13_03_32Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T13_03_32Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T13_49_11Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T13_49_11Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T14_36_42Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T14_36_42Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T15_24_07Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T15_24_07Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T16_15_22Z.001213.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T16_15_22Z.001213.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T16_35_32Z.001747.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-10T23_17_53Z.003371.log
+requesting log file cockroach-pebble.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log... writing: debug/nodes/3/logs/cockroach-pebble.nvmedb2.cockroachdb.2020-11-11T21_53_41Z.009990.log
+requesting ranges... 299 found
+writing: debug/nodes/3/ranges/1.json
+writing: debug/nodes/3/ranges/2.json
+writing: debug/nodes/3/ranges/3.json
+writing: debug/nodes/3/ranges/4.json
+writing: debug/nodes/3/ranges/5.json
+writing: debug/nodes/3/ranges/6.json
+writing: debug/nodes/3/ranges/7.json
+writing: debug/nodes/3/ranges/8.json
+writing: debug/nodes/3/ranges/9.json
+writing: debug/nodes/3/ranges/10.json
+writing: debug/nodes/3/ranges/11.json
+writing: debug/nodes/3/ranges/12.json
+writing: debug/nodes/3/ranges/13.json
+writing: debug/nodes/3/ranges/14.json
+writing: debug/nodes/3/ranges/15.json
+writing: debug/nodes/3/ranges/16.json
+writing: debug/nodes/3/ranges/17.json
+writing: debug/nodes/3/ranges/18.json
+writing: debug/nodes/3/ranges/19.json
+writing: debug/nodes/3/ranges/20.json
+writing: debug/nodes/3/ranges/21.json
+writing: debug/nodes/3/ranges/22.json
+writing: debug/nodes/3/ranges/23.json
+writing: debug/nodes/3/ranges/24.json
+writing: debug/nodes/3/ranges/25.json
+writing: debug/nodes/3/ranges/26.json
+writing: debug/nodes/3/ranges/27.json
+writing: debug/nodes/3/ranges/28.json
+writing: debug/nodes/3/ranges/29.json
+writing: debug/nodes/3/ranges/30.json
+writing: debug/nodes/3/ranges/31.json
+writing: debug/nodes/3/ranges/32.json
+writing: debug/nodes/3/ranges/33.json
+writing: debug/nodes/3/ranges/34.json
+writing: debug/nodes/3/ranges/35.json
+writing: debug/nodes/3/ranges/36.json
+writing: debug/nodes/3/ranges/37.json
+writing: debug/nodes/3/ranges/38.json
+writing: debug/nodes/3/ranges/39.json
+writing: debug/nodes/3/ranges/40.json
+writing: debug/nodes/3/ranges/41.json
+writing: debug/nodes/3/ranges/42.json
+writing: debug/nodes/3/ranges/43.json
+writing: debug/nodes/3/ranges/44.json
+writing: debug/nodes/3/ranges/45.json
+writing: debug/nodes/3/ranges/46.json
+writing: debug/nodes/3/ranges/47.json
+writing: debug/nodes/3/ranges/48.json
+writing: debug/nodes/3/ranges/49.json
+writing: debug/nodes/3/ranges/50.json
+writing: debug/nodes/3/ranges/51.json
+writing: debug/nodes/3/ranges/52.json
+writing: debug/nodes/3/ranges/53.json
+writing: debug/nodes/3/ranges/54.json
+writing: debug/nodes/3/ranges/55.json
+writing: debug/nodes/3/ranges/56.json
+writing: debug/nodes/3/ranges/57.json
+writing: debug/nodes/3/ranges/58.json
+writing: debug/nodes/3/ranges/60.json
+writing: debug/nodes/3/ranges/61.json
+writing: debug/nodes/3/ranges/62.json
+writing: debug/nodes/3/ranges/63.json
+writing: debug/nodes/3/ranges/64.json
+writing: debug/nodes/3/ranges/65.json
+writing: debug/nodes/3/ranges/66.json
+writing: debug/nodes/3/ranges/67.json
+writing: debug/nodes/3/ranges/68.json
+writing: debug/nodes/3/ranges/69.json
+writing: debug/nodes/3/ranges/70.json
+writing: debug/nodes/3/ranges/71.json
+writing: debug/nodes/3/ranges/72.json
+writing: debug/nodes/3/ranges/73.json
+writing: debug/nodes/3/ranges/74.json
+writing: debug/nodes/3/ranges/75.json
+writing: debug/nodes/3/ranges/76.json
+writing: debug/nodes/3/ranges/77.json
+writing: debug/nodes/3/ranges/78.json
+writing: debug/nodes/3/ranges/79.json
+writing: debug/nodes/3/ranges/80.json
+writing: debug/nodes/3/ranges/81.json
+writing: debug/nodes/3/ranges/82.json
+writing: debug/nodes/3/ranges/83.json
+writing: debug/nodes/3/ranges/84.json
+writing: debug/nodes/3/ranges/85.json
+writing: debug/nodes/3/ranges/86.json
+writing: debug/nodes/3/ranges/87.json
+writing: debug/nodes/3/ranges/88.json
+writing: debug/nodes/3/ranges/89.json
+writing: debug/nodes/3/ranges/90.json
+writing: debug/nodes/3/ranges/92.json
+writing: debug/nodes/3/ranges/94.json
+writing: debug/nodes/3/ranges/95.json
+writing: debug/nodes/3/ranges/96.json
+writing: debug/nodes/3/ranges/97.json
+writing: debug/nodes/3/ranges/98.json
+writing: debug/nodes/3/ranges/99.json
+writing: debug/nodes/3/ranges/100.json
+writing: debug/nodes/3/ranges/101.json
+writing: debug/nodes/3/ranges/102.json
+writing: debug/nodes/3/ranges/103.json
+writing: debug/nodes/3/ranges/104.json
+writing: debug/nodes/3/ranges/105.json
+writing: debug/nodes/3/ranges/106.json
+writing: debug/nodes/3/ranges/107.json
+writing: debug/nodes/3/ranges/108.json
+writing: debug/nodes/3/ranges/109.json
+writing: debug/nodes/3/ranges/110.json
+writing: debug/nodes/3/ranges/111.json
+writing: debug/nodes/3/ranges/112.json
+writing: debug/nodes/3/ranges/113.json
+writing: debug/nodes/3/ranges/114.json
+writing: debug/nodes/3/ranges/115.json
+writing: debug/nodes/3/ranges/116.json
+writing: debug/nodes/3/ranges/117.json
+writing: debug/nodes/3/ranges/118.json
+writing: debug/nodes/3/ranges/119.json
+writing: debug/nodes/3/ranges/120.json
+writing: debug/nodes/3/ranges/121.json
+writing: debug/nodes/3/ranges/122.json
+writing: debug/nodes/3/ranges/123.json
+writing: debug/nodes/3/ranges/124.json
+writing: debug/nodes/3/ranges/125.json
+writing: debug/nodes/3/ranges/126.json
+writing: debug/nodes/3/ranges/127.json
+writing: debug/nodes/3/ranges/128.json
+writing: debug/nodes/3/ranges/129.json
+writing: debug/nodes/3/ranges/130.json
+writing: debug/nodes/3/ranges/131.json
+writing: debug/nodes/3/ranges/132.json
+writing: debug/nodes/3/ranges/133.json
+writing: debug/nodes/3/ranges/134.json
+writing: debug/nodes/3/ranges/135.json
+writing: debug/nodes/3/ranges/136.json
+writing: debug/nodes/3/ranges/137.json
+writing: debug/nodes/3/ranges/138.json
+writing: debug/nodes/3/ranges/139.json
+writing: debug/nodes/3/ranges/140.json
+writing: debug/nodes/3/ranges/141.json
+writing: debug/nodes/3/ranges/142.json
+writing: debug/nodes/3/ranges/143.json
+writing: debug/nodes/3/ranges/144.json
+writing: debug/nodes/3/ranges/145.json
+writing: debug/nodes/3/ranges/146.json
+writing: debug/nodes/3/ranges/147.json
+writing: debug/nodes/3/ranges/148.json
+writing: debug/nodes/3/ranges/149.json
+writing: debug/nodes/3/ranges/150.json
+writing: debug/nodes/3/ranges/151.json
+writing: debug/nodes/3/ranges/153.json
+writing: debug/nodes/3/ranges/154.json
+writing: debug/nodes/3/ranges/155.json
+writing: debug/nodes/3/ranges/156.json
+writing: debug/nodes/3/ranges/157.json
+writing: debug/nodes/3/ranges/158.json
+writing: debug/nodes/3/ranges/159.json
+writing: debug/nodes/3/ranges/160.json
+writing: debug/nodes/3/ranges/161.json
+writing: debug/nodes/3/ranges/162.json
+writing: debug/nodes/3/ranges/163.json
+writing: debug/nodes/3/ranges/164.json
+writing: debug/nodes/3/ranges/165.json
+writing: debug/nodes/3/ranges/166.json
+writing: debug/nodes/3/ranges/167.json
+writing: debug/nodes/3/ranges/168.json
+writing: debug/nodes/3/ranges/169.json
+writing: debug/nodes/3/ranges/170.json
+writing: debug/nodes/3/ranges/171.json
+writing: debug/nodes/3/ranges/172.json
+writing: debug/nodes/3/ranges/173.json
+writing: debug/nodes/3/ranges/174.json
+writing: debug/nodes/3/ranges/175.json
+writing: debug/nodes/3/ranges/176.json
+writing: debug/nodes/3/ranges/177.json
+writing: debug/nodes/3/ranges/178.json
+writing: debug/nodes/3/ranges/179.json
+writing: debug/nodes/3/ranges/180.json
+writing: debug/nodes/3/ranges/181.json
+writing: debug/nodes/3/ranges/182.json
+writing: debug/nodes/3/ranges/183.json
+writing: debug/nodes/3/ranges/184.json
+writing: debug/nodes/3/ranges/185.json
+writing: debug/nodes/3/ranges/186.json
+writing: debug/nodes/3/ranges/187.json
+writing: debug/nodes/3/ranges/188.json
+writing: debug/nodes/3/ranges/189.json
+writing: debug/nodes/3/ranges/190.json
+writing: debug/nodes/3/ranges/191.json
+writing: debug/nodes/3/ranges/192.json
+writing: debug/nodes/3/ranges/193.json
+writing: debug/nodes/3/ranges/194.json
+writing: debug/nodes/3/ranges/195.json
+writing: debug/nodes/3/ranges/196.json
+writing: debug/nodes/3/ranges/197.json
+writing: debug/nodes/3/ranges/198.json
+writing: debug/nodes/3/ranges/199.json
+writing: debug/nodes/3/ranges/200.json
+writing: debug/nodes/3/ranges/201.json
+writing: debug/nodes/3/ranges/202.json
+writing: debug/nodes/3/ranges/203.json
+writing: debug/nodes/3/ranges/204.json
+writing: debug/nodes/3/ranges/205.json
+writing: debug/nodes/3/ranges/206.json
+writing: debug/nodes/3/ranges/207.json
+writing: debug/nodes/3/ranges/208.json
+writing: debug/nodes/3/ranges/209.json
+writing: debug/nodes/3/ranges/210.json
+writing: debug/nodes/3/ranges/211.json
+writing: debug/nodes/3/ranges/212.json
+writing: debug/nodes/3/ranges/213.json
+writing: debug/nodes/3/ranges/214.json
+writing: debug/nodes/3/ranges/215.json
+writing: debug/nodes/3/ranges/216.json
+writing: debug/nodes/3/ranges/217.json
+writing: debug/nodes/3/ranges/218.json
+writing: debug/nodes/3/ranges/219.json
+writing: debug/nodes/3/ranges/220.json
+writing: debug/nodes/3/ranges/221.json
+writing: debug/nodes/3/ranges/222.json
+writing: debug/nodes/3/ranges/223.json
+writing: debug/nodes/3/ranges/224.json
+writing: debug/nodes/3/ranges/225.json
+writing: debug/nodes/3/ranges/226.json
+writing: debug/nodes/3/ranges/227.json
+writing: debug/nodes/3/ranges/228.json
+writing: debug/nodes/3/ranges/229.json
+writing: debug/nodes/3/ranges/230.json
+writing: debug/nodes/3/ranges/231.json
+writing: debug/nodes/3/ranges/232.json
+writing: debug/nodes/3/ranges/233.json
+writing: debug/nodes/3/ranges/234.json
+writing: debug/nodes/3/ranges/235.json
+writing: debug/nodes/3/ranges/236.json
+writing: debug/nodes/3/ranges/237.json
+writing: debug/nodes/3/ranges/238.json
+writing: debug/nodes/3/ranges/239.json
+writing: debug/nodes/3/ranges/240.json
+writing: debug/nodes/3/ranges/241.json
+writing: debug/nodes/3/ranges/242.json
+writing: debug/nodes/3/ranges/243.json
+writing: debug/nodes/3/ranges/244.json
+writing: debug/nodes/3/ranges/245.json
+writing: debug/nodes/3/ranges/246.json
+writing: debug/nodes/3/ranges/247.json
+writing: debug/nodes/3/ranges/248.json
+writing: debug/nodes/3/ranges/249.json
+writing: debug/nodes/3/ranges/250.json
+writing: debug/nodes/3/ranges/251.json
+writing: debug/nodes/3/ranges/252.json
+writing: debug/nodes/3/ranges/253.json
+writing: debug/nodes/3/ranges/254.json
+writing: debug/nodes/3/ranges/255.json
+writing: debug/nodes/3/ranges/256.json
+writing: debug/nodes/3/ranges/257.json
+writing: debug/nodes/3/ranges/258.json
+writing: debug/nodes/3/ranges/259.json
+writing: debug/nodes/3/ranges/260.json
+writing: debug/nodes/3/ranges/261.json
+writing: debug/nodes/3/ranges/262.json
+writing: debug/nodes/3/ranges/263.json
+writing: debug/nodes/3/ranges/264.json
+writing: debug/nodes/3/ranges/265.json
+writing: debug/nodes/3/ranges/266.json
+writing: debug/nodes/3/ranges/267.json
+writing: debug/nodes/3/ranges/268.json
+writing: debug/nodes/3/ranges/269.json
+writing: debug/nodes/3/ranges/270.json
+writing: debug/nodes/3/ranges/271.json
+writing: debug/nodes/3/ranges/272.json
+writing: debug/nodes/3/ranges/276.json
+writing: debug/nodes/3/ranges/277.json
+writing: debug/nodes/3/ranges/278.json
+writing: debug/nodes/3/ranges/279.json
+writing: debug/nodes/3/ranges/280.json
+writing: debug/nodes/3/ranges/281.json
+writing: debug/nodes/3/ranges/282.json
+writing: debug/nodes/3/ranges/286.json
+writing: debug/nodes/3/ranges/287.json
+writing: debug/nodes/3/ranges/288.json
+writing: debug/nodes/3/ranges/289.json
+writing: debug/nodes/3/ranges/290.json
+writing: debug/nodes/3/ranges/291.json
+writing: debug/nodes/3/ranges/292.json
+writing: debug/nodes/3/ranges/293.json
+writing: debug/nodes/3/ranges/294.json
+writing: debug/nodes/3/ranges/295.json
+writing: debug/nodes/3/ranges/296.json
+writing: debug/nodes/3/ranges/297.json
+writing: debug/nodes/3/ranges/298.json
+writing: debug/nodes/3/ranges/299.json
+writing: debug/nodes/3/ranges/320.json
+writing: debug/nodes/3/ranges/321.json
+writing: debug/nodes/3/ranges/324.json
+writing: debug/nodes/3/ranges/325.json
+writing: debug/nodes/3/ranges/356.json
+writing: debug/nodes/3/ranges/358.json
+writing: debug/nodes/3/ranges/361.json
+writing: debug/nodes/3/ranges/362.json
+writing: debug/nodes/3/ranges/363.json
+writing: debug/nodes/3/ranges/376.json
+writing: debug/nodes/4/status.json
+using SQL connection URL for node 4: postgresql://root@192.168.1.169:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+retrieving SQL data for crdb_internal.feature_usage... writing: debug/nodes/4/crdb_internal.feature_usage.txt
+retrieving SQL data for crdb_internal.gossip_alerts... writing: debug/nodes/4/crdb_internal.gossip_alerts.txt
+retrieving SQL data for crdb_internal.gossip_liveness... writing: debug/nodes/4/crdb_internal.gossip_liveness.txt
+retrieving SQL data for crdb_internal.gossip_network... writing: debug/nodes/4/crdb_internal.gossip_network.txt
+retrieving SQL data for crdb_internal.gossip_nodes... writing: debug/nodes/4/crdb_internal.gossip_nodes.txt
+retrieving SQL data for crdb_internal.leases... writing: debug/nodes/4/crdb_internal.leases.txt
+retrieving SQL data for crdb_internal.node_build_info... writing: debug/nodes/4/crdb_internal.node_build_info.txt
+retrieving SQL data for crdb_internal.node_metrics... writing: debug/nodes/4/crdb_internal.node_metrics.txt
+retrieving SQL data for crdb_internal.node_queries... writing: debug/nodes/4/crdb_internal.node_queries.txt
+retrieving SQL data for crdb_internal.node_runtime_info... writing: debug/nodes/4/crdb_internal.node_runtime_info.txt
+retrieving SQL data for crdb_internal.node_sessions... writing: debug/nodes/4/crdb_internal.node_sessions.txt
+retrieving SQL data for crdb_internal.node_statement_statistics... writing: debug/nodes/4/crdb_internal.node_statement_statistics.txt
+retrieving SQL data for crdb_internal.node_transaction_statistics... writing: debug/nodes/4/crdb_internal.node_transaction_statistics.txt
+retrieving SQL data for crdb_internal.node_transactions... writing: debug/nodes/4/crdb_internal.node_transactions.txt
+retrieving SQL data for crdb_internal.node_txn_stats... writing: debug/nodes/4/crdb_internal.node_txn_stats.txt
+requesting data for debug/nodes/4/details... writing: debug/nodes/4/details.json
+requesting data for debug/nodes/4/gossip... writing: debug/nodes/4/gossip.json
+requesting data for debug/nodes/4/enginestats... writing: debug/nodes/4/enginestats.json
+requesting stacks for node 4... writing: debug/nodes/4/stacks.txt
+requesting threads for node 4... writing: debug/nodes/4/threads.txt
+requesting heap profile for node 4... writing: debug/nodes/4/heap.pprof
+requesting heap files for node 4... 57 found
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T00_08_24.554.222760568.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T00_14_14.537.223296208.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T00_20_14.517.225311520.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T00_26_14.499.231749880.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T00_32_54.480.232004856.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T02_19_14.158.231271232.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T02_20_14.154.233099000.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T02_25_34.136.238075320.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T02_31_14.124.240761192.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T02_35_54.111.245591264.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T03_42_53.885.199809616.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T04_06_23.801.200761216.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T04_15_53.766.201343664.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T04_58_23.614.201955912.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T05_20_13.536.202011296.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T06_20_23.320.152118720.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T06_20_33.318.180566936.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T06_21_23.315.181164016.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T06_22_23.312.197385224.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T06_23_13.309.201053840.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T07_26_13.076.196959712.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T07_27_03.073.198723400.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T07_38_23.031.199969016.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T07_39_13.028.202176784.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T07_51_32.983.203897992.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T08_51_52.763.189763856.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T08_53_42.757.194634136.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T08_54_32.753.198912872.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T08_57_22.743.201094592.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T08_58_12.741.202074208.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T09_58_22.518.173437360.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T09_58_32.516.200221216.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T09_59_22.513.201723520.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T10_59_32.290.179242272.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T11_00_22.288.181491792.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T11_01_22.283.196469480.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T11_02_12.281.202103752.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T11_23_02.205.202367288.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T12_24_51.981.181386976.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T12_25_51.977.196620896.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T12_26_41.974.198567720.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T12_29_31.964.201638176.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T12_30_21.961.205110968.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T13_49_41.669.199503312.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T13_50_31.665.201469480.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T13_58_01.639.202071216.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T14_09_11.597.202552856.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T14_10_01.594.203204440.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T15_26_11.314.201687472.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T15_27_01.312.202249080.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T15_48_41.235.202402936.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T15_49_31.231.204167760.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T16_34_01.068.206825264.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T17_34_10.850.194364296.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T17_35_00.847.199846288.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T17_39_40.830.202908192.pprof
+writing: debug/nodes/4/heapprof/memprof.2020-11-19T18_18_00.691.204370024.pprof
+requesting goroutine files for node 4... 0 found
+requesting log files list... 3 found
+requesting log file cockroach.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log... writing: debug/nodes/4/logs/cockroach.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log
+requesting log file cockroach-stderr.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log... writing: debug/nodes/4/logs/cockroach-stderr.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log
+requesting log file cockroach-pebble.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log... writing: debug/nodes/4/logs/cockroach-pebble.nvmedb4.cockroachdb.2020-11-18T22_45_04Z.001219.log
+requesting ranges... 0 found
+writing: debug/nodes/5/status.json
+using SQL connection URL for node 5: postgresql://root@192.168.1.55:26257/system?application_name=%24+cockroach+zip&connect_timeout=15&sslmode=disable
+retrieving SQL data for crdb_internal.feature_usage... writing: debug/nodes/5/crdb_internal.feature_usage.txt
+retrieving SQL data for crdb_internal.gossip_alerts... writing: debug/nodes/5/crdb_internal.gossip_alerts.txt
+retrieving SQL data for crdb_internal.gossip_liveness... writing: debug/nodes/5/crdb_internal.gossip_liveness.txt
+retrieving SQL data for crdb_internal.gossip_network... writing: debug/nodes/5/crdb_internal.gossip_network.txt
+retrieving SQL data for crdb_internal.gossip_nodes... writing: debug/nodes/5/crdb_internal.gossip_nodes.txt
+retrieving SQL data for crdb_internal.leases... writing: debug/nodes/5/crdb_internal.leases.txt
+retrieving SQL data for crdb_internal.node_build_info... writing: debug/nodes/5/crdb_internal.node_build_info.txt
+retrieving SQL data for crdb_internal.node_metrics... writing: debug/nodes/5/crdb_internal.node_metrics.txt
+retrieving SQL data for crdb_internal.node_queries... writing: debug/nodes/5/crdb_internal.node_queries.txt
+retrieving SQL data for crdb_internal.node_runtime_info... writing: debug/nodes/5/crdb_internal.node_runtime_info.txt
+retrieving SQL data for crdb_internal.node_sessions... writing: debug/nodes/5/crdb_internal.node_sessions.txt
+retrieving SQL data for crdb_internal.node_statement_statistics... writing: debug/nodes/5/crdb_internal.node_statement_statistics.txt
+retrieving SQL data for crdb_internal.node_transaction_statistics... writing: debug/nodes/5/crdb_internal.node_transaction_statistics.txt
+retrieving SQL data for crdb_internal.node_transactions... writing: debug/nodes/5/crdb_internal.node_transactions.txt
+retrieving SQL data for crdb_internal.node_txn_stats... writing: debug/nodes/5/crdb_internal.node_txn_stats.txt
+requesting data for debug/nodes/5/details... writing: debug/nodes/5/details.json
+requesting data for debug/nodes/5/gossip... writing: debug/nodes/5/gossip.json
+requesting data for debug/nodes/5/enginestats... writing: debug/nodes/5/enginestats.json
+requesting stacks for node 5... writing: debug/nodes/5/stacks.txt
+requesting threads for node 5... writing: debug/nodes/5/threads.txt
+requesting heap profile for node 5... writing: debug/nodes/5/heap.pprof
+requesting heap files for node 5... 51 found
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T01_11_50.968.191992808.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T01_13_10.967.201102424.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T01_18_30.964.205317200.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T01_41_20.954.205336632.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T01_52_30.950.205948744.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T02_52_40.911.171107192.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T02_53_40.909.180422944.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T02_54_40.908.188984888.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T03_18_20.886.189246744.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T03_19_20.885.196259000.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T04_19_30.831.158626992.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T04_19_40.831.183654480.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T04_24_30.826.183734696.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T04_25_30.825.195382880.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T05_25_40.772.164301800.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T05_25_50.772.188957832.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T05_34_40.762.192046704.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T05_57_30.740.192758896.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T06_57_40.686.158801536.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T06_57_50.686.183000720.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T06_58_50.685.190542200.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T07_10_30.676.191089064.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T08_10_40.619.173768240.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T08_11_40.618.184192968.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T08_17_30.614.186227736.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T08_18_30.611.197301648.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T09_59_50.519.189893168.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T10_10_30.508.190243592.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T10_19_20.501.190652464.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T10_33_10.488.191471328.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T10_56_50.467.193811896.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T11_57_10.413.185114512.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T12_05_00.406.190467416.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T12_29_40.385.191760680.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T13_27_10.335.192841728.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T13_49_30.314.193282800.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T14_51_30.260.188423072.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T14_56_20.255.190313272.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T15_09_50.243.190536496.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T15_10_40.243.191023880.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T15_11_40.243.197411672.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T16_17_40.180.188886728.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T16_21_30.178.189011048.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T16_22_20.176.190865392.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T16_36_10.163.191231216.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T16_45_00.155.193982728.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T17_45_10.100.189797192.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T17_50_00.095.190428224.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T17_55_50.089.191109528.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T18_17_20.071.191676912.pprof
+writing: debug/nodes/5/heapprof/memprof.2020-11-19T18_41_50.050.193000784.pprof
+requesting goroutine files for node 5... 0 found
+requesting log files list... 3 found
+requesting log file cockroach.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log... writing: debug/nodes/5/logs/cockroach.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log
+requesting log file cockroach-stderr.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log... writing: debug/nodes/5/logs/cockroach-stderr.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log
+requesting log file cockroach-pebble.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log... writing: debug/nodes/5/logs/cockroach-pebble.nvmedb5.cockroachdb.2020-11-19T00_03_20Z.001246.log
+requesting ranges... 0 found
+requesting list of SQL databases... 4 found
+requesting database details for defaultdb... writing: debug/schema/defaultdb@details.json
+0 tables found
+requesting database details for kv... writing: debug/schema/kv@details.json
+1 tables found
+requesting table details for kv.public.kv... writing: debug/schema/kv/public_kv.json
+requesting database details for postgres... writing: debug/schema/postgres@details.json
+0 tables found
+requesting database details for system... writing: debug/schema/system@details.json
+29 tables found
+requesting table details for system.public.namespace... writing: debug/schema/system/public_namespace.json
+requesting table details for system.public.descriptor... writing: debug/schema/system/public_descriptor.json
+requesting table details for system.public.users... writing: debug/schema/system/public_users.json
+requesting table details for system.public.zones... writing: debug/schema/system/public_zones.json
+requesting table details for system.public.settings... writing: debug/schema/system/public_settings.json
+requesting table details for system.public.tenants... writing: debug/schema/system/public_tenants.json
+requesting table details for system.public.lease... writing: debug/schema/system/public_lease.json
+requesting table details for system.public.eventlog... writing: debug/schema/system/public_eventlog.json
+requesting table details for system.public.rangelog... writing: debug/schema/system/public_rangelog.json
+requesting table details for system.public.ui... writing: debug/schema/system/public_ui.json
+requesting table details for system.public.jobs... writing: debug/schema/system/public_jobs.json
+requesting table details for system.public.web_sessions... writing: debug/schema/system/public_web_sessions.json
+requesting table details for system.public.table_statistics... writing: debug/schema/system/public_table_statistics.json
+requesting table details for system.public.locations... writing: debug/schema/system/public_locations.json
+requesting table details for system.public.role_members... writing: debug/schema/system/public_role_members.json
+requesting table details for system.public.comments... writing: debug/schema/system/public_comments.json
+requesting table details for system.public.replication_constraint_stats... writing: debug/schema/system/public_replication_constraint_stats.json
+requesting table details for system.public.replication_critical_localities... writing: debug/schema/system/public_replication_critical_localities.json
+requesting table details for system.public.replication_stats... writing: debug/schema/system/public_replication_stats.json
+requesting table details for system.public.reports_meta... writing: debug/schema/system/public_reports_meta.json
+requesting table details for system.public.namespace2... writing: debug/schema/system/public_namespace2.json
+requesting table details for system.public.protected_ts_meta... writing: debug/schema/system/public_protected_ts_meta.json
+requesting table details for system.public.protected_ts_records... writing: debug/schema/system/public_protected_ts_records.json
+requesting table details for system.public.role_options... writing: debug/schema/system/public_role_options.json
+requesting table details for system.public.statement_bundle_chunks... writing: debug/schema/system/public_statement_bundle_chunks.json
+requesting table details for system.public.statement_diagnostics_requests... writing: debug/schema/system/public_statement_diagnostics_requests.json
+requesting table details for system.public.statement_diagnostics... writing: debug/schema/system/public_statement_diagnostics.json
+requesting table details for system.public.scheduled_jobs... writing: debug/schema/system/public_scheduled_jobs.json
+requesting table details for system.public.sqlliveness... writing: debug/schema/system/public_sqlliveness.json
+writing: debug/pprof-summary.sh
+root@nvmedb1:/cockroachdb# echo $?
+0
+----
+
+That seems to have worked.  I have not checked the zip file contents yet.
+
+=== TODO next
+
+* new "testing details" doc for RFD 110:
+** rolling upgrade client-side data and update RFD
+** take a look at the "debug zip" that I created
+* update RFD 110 with changes from new round of testing
+* try a restore from the "cockroach dump" that I created (and update RFD)
+* update RFD with licensing notes
+* try a schema upgrade?
 * don't forget to update proto-raw.tgz when I'm done here
