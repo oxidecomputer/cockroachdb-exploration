@@ -13769,12 +13769,278 @@ dap@zathras 2020-11-11-rolling-upgrade $
 
 IMPORTANT: I learned while writing this up that the bash prompt for nvmedb2 and nvmedb3 (and the AWS instance labels) are inconsistent with the CockroachDB node names -- they're backwards (n3 and n2, respectively).  What a pain.
 
+== 2020-11-20
+
+=== "debug zip"
+
+I'm poking through the debug zip that I created the other day.  There's good stuff in here.  I see:
+
+* settings.json: list of all cluster config settings
+* events.json: appears to be an event log (e.g., "decommissioning")
+* rangelog.json: appears to be a log of changes to ranges
+* nodes.json: includes detailed information about each node, including metrics, uptime, buildinformation, etc.
+* running queries of various kinds, including internal
+* list of replication zones
+* for each node: lots of internal details, including stacks.txt, command-line arguments, environment variables, log files
+* for each node, for each range: information about the range, including byte counts, replicas, etc.
+* schema details
+* report on "problem ranges"
+
+Data missing:
+
+* nodes/*/threads.txt: "thread stacks only available on Linux/Glibc"
+(stacks.txt is populated)
+
+This is the only file I've found that contains a string like this.  I'm not sure about the pprof files below though.
+
+Not sure:
+
+* cpu.pprof, heap.pprof: not sure what file format this is
+* there are a bunch of "memprof" files for each node with different timestamps a few minutes apart
+
+
+=== Schema upgrade
+
+https://www.cockroachlabs.com/docs/stable/online-schema-changes.html[Docs] are here.
+
+Ideas:
+
+* create a new default NULL column
+* rename the column
+* drop the column
+* create a new column with a non-default value
+
+Initial state:
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> \d kv;
+  column_name | data_type | is_nullable | column_default | generation_expression |  indices  | is_hidden
+--------------+-----------+-------------+----------------+-----------------------+-----------+------------
+  k           | INT8      |    false    | NULL           |                       | {primary} |   false
+  v           | BYTES     |    false    | NULL           |                       | {}        |   false
+(2 rows)
+----
+
+So maybe:
+
+[source,text]
+----
+ALTER TABLE kv ADD COLUMN d1 INT8 DEFAULT NULL;
+ALTER TABLE kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3;
+ALTER TABLE kv RENAME COLUMN d2 TO d3;
+ALTER TABLE kv DROP COLUMN d1;
+ALTER TABLE kv DROP COLUMN d3;
+----
+
+First, I'm going to start a light workload like I've been doing:
+
+[source,text]
+----
+date="$(date +%FT%TZ)"
+for node in 52 43 159; do
+	nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+done
+----
+
+Workload started at 19:26:23Z.
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> SELECT NOW(); ALTER TABLE kv ADD COLUMN d1 INT8 DEFAULT NULL; SELECT NOW();
+                now
+------------------------------------
+  2020-11-20 19:56:09.510504+00:00
+(1 row)
+
+Note: timings for multiple statements on a single line are not supported. See https://go.crdb.dev/issue-v/48180/v20.2.
+
+                now
+------------------------------------
+  2020-11-20 19:56:12.894271+00:00
+(1 row)
+
+Note: timings for multiple statements on a single line are not supported. See https://go.crdb.dev/issue-v/48180/v20.2.
+
+root@192.168.1.163:26257/kv> SELECT NOW();  ALTER TABLE kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3;  SELECT NOW();
+ERROR: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+root@192.168.1.163:26257/kv> 
+----
+
+add d1: started 19:56:09Z, job succeeded in 2 seconds.
+add d2: started 19:58:23Z, was "Waiting in DELETE-ONLY" for a while.  SQL session bombed out.  Switched to "Populating schema", which looks like a potentially very long-running backfill operation.  By 20:02Z, it reported 2.7% complete with "02:12:08 remaining" (presumably 2 hours 12 minutes)
+
+I wonder if the decommissioned-but-not-yet-removed nodes n4 and n5 are making this slow.
+
+Note: at this time, the "kv" database is 273.2 GiB in size with 260 total ranges.  I think that's smaller than before.
+
+This job eventually completed:
+
+[source,text]
+----
+root@192.168.1.163:26257/defaultdb> show jobs;
+        job_id       |   job_type    |                          description                           | statement | user_name |  status   | running_status |             created              |             started              |             finished             |             modified             | fraction_completed | error | coordinator_id
+---------------------+---------------+----------------------------------------------------------------+-----------+-----------+-----------+----------------+----------------------------------+----------------------------------+----------------------------------+----------------------------------+--------------------+-------+-----------------
+  608933977813516289 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3 |           | root      | succeeded | NULL           | 2020-11-20 19:58:22.396793+00:00 | 2020-11-20 19:58:23.262529+00:00 | 2020-11-20 21:04:02.599603+00:00 | 2020-11-20 21:04:02.58695+00:00  |                  1 |       |           NULL
+  608933542348455937 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d1 INT8 DEFAULT NULL       |           | root      | succeeded | NULL           | 2020-11-20 19:56:09.510659+00:00 | 2020-11-20 19:56:09.844324+00:00 | 2020-11-20 19:56:12.018731+00:00 | 2020-11-20 19:56:11.997991+00:00 |                  1 |       |           NULL
+(2 rows)
+
+Time: 9ms total (execution 8ms / network 1ms)
+----
+
+It looks like it took about 1h6m.
+
+Latency was very badly affected, though.
+
+I'm going to try a few more items:
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> ALTER TABLE kv RENAME COLUMN d2 TO d3; SELECT NOW();
+                now
+------------------------------------
+  2020-11-20 22:03:05.527899+00:00
+(1 row)
+
+Note: timings for multiple statements on a single line are not supported. See https://go.crdb.dev/issue-v/48180/v20.2.
+
+root@192.168.1.163:26257/kv> show jobs;
+        job_id       |   job_type    |                          description                           | statement | user_name |  status   | running_status |             created              |             started              |             finished             |             modified             | fraction_completed | error | coordinator_id
+---------------------+---------------+----------------------------------------------------------------+-----------+-----------+-----------+----------------+----------------------------------+----------------------------------+----------------------------------+----------------------------------+--------------------+-------+-----------------
+  608958498022752257 | SCHEMA CHANGE | ALTER TABLE kv.public.kv RENAME COLUMN d2 TO d3                |           | root      | succeeded | NULL           | 2020-11-20 22:03:05.380101+00:00 | 2020-11-20 22:03:05.456246+00:00 | 2020-11-20 22:03:05.486898+00:00 | 2020-11-20 22:03:05.477285+00:00 |                  1 |       |           NULL
+  608933977813516289 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3 |           | root      | succeeded | NULL           | 2020-11-20 19:58:22.396793+00:00 | 2020-11-20 19:58:23.262529+00:00 | 2020-11-20 21:04:02.599603+00:00 | 2020-11-20 21:04:02.58695+00:00  |                  1 |       |           NULL
+  608933542348455937 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d1 INT8 DEFAULT NULL       |           | root      | succeeded | NULL           | 2020-11-20 19:56:09.510659+00:00 | 2020-11-20 19:56:09.844324+00:00 | 2020-11-20 19:56:12.018731+00:00 | 2020-11-20 19:56:11.997991+00:00 |                  1 |       |           NULL
+(3 rows)
+
+Time: 9ms total (execution 8ms / network 1ms)
+----
+
+That completed very quickly.  Now I'm going to drop "d1", which I expect should be fast.  I was wrong about that.  It looks like it's going to take a while.
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> ALTER TABLE kv DROP COLUMN d1;
+ERROR: rejected (sql_safe_updates = true): ALTER TABLE DROP COLUMN will remove all data in that column
+SQLSTATE: 01000
+root@192.168.1.163:26257/kv> set sql_safe_updates = false;
+invalid syntax: statement ignored: at or near "safe_updates": syntax error
+SQLSTATE: 42601
+DETAIL: source SQL:
+safe_updates = false
+^
+root@192.168.1.163:26257/kv> set sql_safe_updates = false;
+SET
+
+Time: 0ms total (execution 0ms / network 0ms)
+
+root@192.168.1.163:26257/kv> select NOW(); ALTER TABLE kv DROP COLUMN d1;
+ERROR: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+root@192.168.1.163:26257/kv> 
+----
+
+This ultimately took 58m57s.
+
+At this point, it looks like this:
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> \d kv;
+  column_name | data_type | is_nullable | column_default | generation_expression |  indices  | is_hidden
+--------------+-----------+-------------+----------------+-----------------------+-----------+------------
+  k           | INT8      |    false    | NULL           |                       | {primary} |   false
+  v           | BYTES     |    false    | NULL           |                       | {}        |   false
+  d3          | INT8      |    false    | 3:::INT8       |                       | {}        |   false
+(3 rows)
+----
+
+Finally, I'm going to try the last one, which I also expect to take a while:
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> ALTER TABLE kv DROP COLUMN d3;
+ERROR: driver: bad connection
+warning: connection lost!
+opening new connection: all session settings will be lost
+root@192.168.1.163:26257/kv> 
+----
+
+There are lots of open issues around the latency impact:
+
+* https://github.com/cockroachdb/cockroach/issues/36850
+* https://github.com/cockroachdb/cockroach/issues/34868
+* https://github.com/cockroachdb/cockroach/issues/47989
+* https://github.com/cockroachdb/cockroach/issues/36430
+* https://github.com/cockroachdb/cockroach/issues/47215
+
+This finally finished around 00:57:49Z (91m total).
+
+Final output:
+
+[source,text]
+----
+root@192.168.1.163:26257/kv> show jobs;
+        job_id       |   job_type    |                          description                           | statement | user_name |  status   | running_status |             created              |             started              |             finished             |             modified             | fraction_completed | error | coordinator_id
+---------------------+---------------+----------------------------------------------------------------+-----------+-----------+-----------+----------------+----------------------------------+----------------------------------+----------------------------------+----------------------------------+--------------------+-------+-----------------
+  608974938327416833 | SCHEMA CHANGE | ALTER TABLE kv.public.kv DROP COLUMN d3                        |           | root      | succeeded | NULL           | 2020-11-20 23:26:42.550792+00:00 | 2020-11-20 23:26:42.637955+00:00 | 2020-11-21 00:57:49.484005+00:00 | 2020-11-21 00:57:49.473637+00:00 |                  1 |       |           NULL
+  608958717186801665 | SCHEMA CHANGE | ALTER TABLE kv.public.kv DROP COLUMN d1                        |           | root      | succeeded | NULL           | 2020-11-20 22:04:12.247699+00:00 | 2020-11-20 22:04:12.336029+00:00 | 2020-11-20 23:03:09.523536+00:00 | 2020-11-20 23:03:09.513231+00:00 |                  1 |       |           NULL
+  608958498022752257 | SCHEMA CHANGE | ALTER TABLE kv.public.kv RENAME COLUMN d2 TO d3                |           | root      | succeeded | NULL           | 2020-11-20 22:03:05.380101+00:00 | 2020-11-20 22:03:05.456246+00:00 | 2020-11-20 22:03:05.486898+00:00 | 2020-11-20 22:03:05.477285+00:00 |                  1 |       |           NULL
+  608933977813516289 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3 |           | root      | succeeded | NULL           | 2020-11-20 19:58:22.396793+00:00 | 2020-11-20 19:58:23.262529+00:00 | 2020-11-20 21:04:02.599603+00:00 | 2020-11-20 21:04:02.58695+00:00  |                  1 |       |           NULL
+  608933542348455937 | SCHEMA CHANGE | ALTER TABLE kv.public.kv ADD COLUMN d1 INT8 DEFAULT NULL       |           | root      | succeeded | NULL           | 2020-11-20 19:56:09.510659+00:00 | 2020-11-20 19:56:09.844324+00:00 | 2020-11-20 19:56:12.018731+00:00 | 2020-11-20 19:56:11.997991+00:00 |                  1 |       |           NULL
+(5 rows)
+
+Time: 10ms total (execution 9ms / network 1ms)
+
+root@192.168.1.163:26257/kv> \d kv
+  column_name | data_type | is_nullable | column_default | generation_expression |  indices  | is_hidden
+--------------+-----------+-------------+----------------+-----------------------+-----------+------------
+  k           | INT8      |    false    | NULL           |                       | {primary} |   false
+  v           | BYTES     |    false    | NULL           |                       | {}        |   false
+(2 rows)
+
+Time: 44ms total (execution 44ms / network 1ms)
+
+root@192.168.1.163:26257/kv> select NOW();
+                now
+-----------------------------------
+  2020-11-21 01:10:41.32235+00:00
+(1 row)
+
+Time: 1ms total (execution 0ms / network 0ms)
+
+----
+
+Shut down load generators at 2020-11-21T01:11Z
+
+== 2020-11-23
+
+=== Summarizing data from schema changes
+
+Timeline (from above):
+
+[source,text]
+----
+CREATED              FINISHED             ELAPSED   SQL
+2020-11-20T19:56:09Z 2020-11-20T19:56:12Z        3s ALTER TABLE kv.public.kv ADD COLUMN d1 INT8 DEFAULT NULL
+2020-11-20T19:58:22Z 2020-11-20T21:04:02Z  1h05m40s ALTER TABLE kv.public.kv ADD COLUMN d2 INT8 NOT NULL DEFAULT 3
+2020-11-20T22:03:05Z 2020-11-20T22:03:05Z        0s ALTER TABLE kv.public.kv RENAME COLUMN d2 TO d3
+2020-11-20T22:04:12Z 2020-11-20T23:03:09Z    58m57s ALTER TABLE kv.public.kv DROP COLUMN d1
+2020-11-20T23:26:42Z 2020-11-21T00:57:49Z  1h31m07s ALTER TABLE kv.public.kv DROP COLUMN d3
+----
+
+The graphs that I want for this are probably similar to the graphs for the expansion/contraction events rather than, say, rolling upgrade.  I don't need data broken out by client.
+
+I did the usual setup of directory structure and sequence of `chist` and `awk` commands, based on the sequence from the 2020-11-18-nvme-expansion-contraction analysis.  I gzip'd the data files before adding them to Git because they're a bit large.
+
 === TODO next
 
-* new "testing details" doc for RFD 110:
-** take a look at the "debug zip" that I created
-* update RFD 110 with changes from new round of testing
+* update "testing details" doc for RFD 110 with anything that's missing?
+** schema update
+*** client side data
+*** Grafana data on CPU, disk utilization
+** any other testing we did?
 * try a restore from the "cockroach dump" that I created (and update RFD)
-* update RFD with licensing notes
-* try a schema upgrade?
 * don't forget to update proto-raw.tgz when I'm done here
