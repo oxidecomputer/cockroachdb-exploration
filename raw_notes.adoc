@@ -14017,6 +14017,178 @@ Shut down load generators at 2020-11-21T01:11Z
 
 == 2020-11-23
 
+=== Update proto area
+
+I need to update my raw proto tarball for the changes I made a few weeks ago.  First, I'm going to compare the old one to the current contents of the "vminit" directory.
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ mkdir old_proto
+dap@zathras cockroachdb-testing-round2 $ cd old_proto
+dap@zathras old_proto $ tar xzf ../proto-raw.tgz
+dap@zathras old_proto $ pwd
+/Users/dap/oxide/cockroachdb-testing-round2/old_proto
+dap@zathras old_proto $ ls
+total 0
+drwxr-xr-x  6 dap  staff  192 Nov 23 13:42 vminit/
+dap@zathras old_proto $ ls vminit/
+total 13992
+drwxr-xr-x  4 dap  staff      128 Nov 23 13:42 cockroachdb/
+drwxr-xr-x  3 dap  staff       96 Nov 23 13:42 common/
+-rwxr-xr-x  1 dap  staff  7160924 Sep  2 15:37 fetcher.gz*
+drwxr-xr-x  3 dap  staff       96 Nov 23 13:42 mon/
+dap@zathras old_proto $ ls ../vminit/
+total 567248
+-rw-r--r--  1 dap  staff        357 Oct 28 15:25 GNUmakefile
+drwxr-xr-x  4 dap  staff        128 Oct 28 15:26 cockroachdb/
+drwxr-xr-x  3 dap  staff         96 Oct 28 15:25 common/
+-rwxr-xr-x  1 dap  staff    7160924 Sep  2 15:37 fetcher.gz*
+drwxr-xr-x  3 dap  staff         96 Oct 28 15:25 mon/
+-rw-r--r--  1 dap  staff  180481661 Nov  9 16:45 vminit-cockroachdb.tgz
+-rw-r--r--  1 dap  staff   13412672 Oct 28 15:32 vminit-common.tgz
+-rw-r--r--  1 dap  staff   84643107 Oct 28 15:33 vminit-mon.tgz
+-rw-r--r--  1 dap  staff       5269 Oct 28 15:25 vminit.sh
+dap@zathras old_proto $ 
+cd ..
+dap@zathras cockroachdb-testing-round2 $ diff -r vminit/ old_proto/vminit > proto_diff.out
+Only in vminit/: GNUmakefile
+Binary files vminit/cockroachdb/cockroachdb/bin/cockroach and old_proto/vminit/cockroachdb/cockroachdb/bin/cockroach differ
+Only in vminit/cockroachdb/cockroachdb/bin: cockroach-v20.2.0
+Only in vminit/cockroachdb/cockroachdb/bin: cockroach-v20.2.0-rc.3
+Only in vminit/cockroachdb/cockroachdb/bin: cockroach-v20.2.0-rc.4
+Only in vminit/cockroachdb/cockroachdb/bin: configure_cluster
+Only in vminit/cockroachdb/cockroachdb/bin: configure_haproxy
+Only in vminit/cockroachdb/cockroachdb: etc
+Binary files vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1 and old_proto/vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1 differ
+Binary files vminit/cockroachdb/cockroachdb/lib/libstdc++.so.6 and old_proto/vminit/cockroachdb/cockroachdb/lib/libstdc++.so.6 differ
+Only in vminit/cockroachdb/cockroachdb: smf
+Only in vminit/common/opt/oxide: etc
+Only in vminit/common/opt/oxide: smf
+Only in vminit/mon/mon/grafana: grafana.ini
+Only in vminit/mon/mon/grafana: provisioning
+Only in vminit/mon/mon/grafana: stock_dashboards
+Only in vminit/mon/mon/prometheus: prometheus.yml
+Only in vminit/mon/mon/prometheus: rules
+Only in vminit/mon/mon: smf
+Only in vminit/: vminit-cockroachdb.tgz
+Only in vminit/: vminit-common.tgz
+Only in vminit/: vminit-mon.tgz
+Only in vminit/: vminit.sh
+----
+
+Files to be added or updated:
+
+[source,text]
+----
+vminit/cockroachdb/cockroachdb/bin/cockroach
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.3
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.4
+vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1
+vminit/cockroachdb/cockroachdb/lib/libstdc++.so.6
+----
+
+The rest are in Git in this repo.
+
+This exactly matches what I'd expect.  So now to create the _new_ proto tarball, I'm going to start with the list of files from the _old_ one, add the six files above, sort and dedup, and use that list of files.
+
+[source,text]
+----
+$ tar tzf proto-raw.tgz > proto_files.txt
+$ vim proto_files.txt 
+$ wc -l proto_files.txt 
+    2812 proto_files.txt
+$ sort -u proto_files.txt > proto_files_sorted.txt
+$ wc -l proto_files_sorted.txt 
+    2809 proto_files_sorted.txt
+$ mv proto_files_sorted.txt proto_files.txt 
+overwrite proto_files.txt? (y/n [n]) y
+$ tar czf proto-raw-new.tgz -n -T proto_files.txt 
+$
+----
+
+Now, let's compare them:
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ tar tzf proto-raw.tgz > proto_files_1.txt
+dap@zathras cockroachdb-testing-round2 $ tar tzf proto-raw-new.tgz > proto_files_2.txt
+dap@zathras cockroachdb-testing-round2 $ wc -l proto_files_{1,2}.txt
+    2806 proto_files_1.txt
+    2809 proto_files_2.txt
+    5615 total
+dap@zathras cockroachdb-testing-round2 $ sort proto_files_1.txt > proto_files_1_sorted.txt
+dap@zathras cockroachdb-testing-round2 $ sort proto_files_2.txt > proto_files_2_sorted.txt
+dap@zathras cockroachdb-testing-round2 $ diff proto_files_{1,2}_sorted.txt
+1a2,4
+> vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0
+> vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.3
+> vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.4
+dap@zathras cockroachdb-testing-round2 $ 
+----
+
+So far, so good.  Let's be really sure.  I'll create a new clone of this repo, unpack the new proto tarball, and recursively diff its "vminit" directory tree with this clone's:
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ cd ../
+dap@zathras oxide $ git clone cockroachdb-testing-round2/ cockroachdb-testing-new-proto
+Cloning into 'cockroachdb-testing-new-proto'...
+done.
+Updating files: 100% (399/399), done.
+dap@zathras oxide $ cd !$
+cd cockroachdb-testing-new-proto
+dap@zathras cockroachdb-testing-new-proto $ tar xzf ../cockroachdb-testing-round2/proto-raw-new.tgz
+dap@zathras cockroachdb-testing-new-proto $ diff -r vminit/ ../cockroachdb-testing-round2/vminit
+Only in ../cockroachdb-testing-round2/vminit: vminit-cockroachdb.tgz
+Only in ../cockroachdb-testing-round2/vminit: vminit-common.tgz
+Only in ../cockroachdb-testing-round2/vminit: vminit-mon.tgz
+dap@zathras cockroachdb-testing-new-proto $
+----
+
+Perfect!  Now, to finalize the changes.  In the S3 bucket, I'm going to copy the current proto-raw.tgz to an archived version based on its current mtime, which is from 2020-10-16.  Then I'm going to copy my new tarball to an archived copy based on today's date.  Then I'll copy that to "proto-raw.tgz" to represent the current one.
+
+[source,text]
+----
+dap@zathras cockroachdb-testing-round2 $ aws s3 ls oxide-cockroachdb-exploration
+                           PRE data/
+2020-11-13 15:39:43 87348554912 cockroach-dump-kv-2020-11-11.sql
+2020-08-27 15:28:39   87156784 cockroachdb.tar.gz
+2020-10-16 16:39:48  198929508 proto-raw.tgz
+2020-09-14 16:00:45   93765576 vminit-cockroachdb.tgz
+2020-09-10 16:09:46   13412713 vminit-common.tgz
+2020-09-08 16:10:44   84117103 vminit-mon.tgz
+dap@zathras cockroachdb-testing-round2 $ aws s3 cp s3://oxide-cockroachdb-exploration/proto-raw.tgz s3://oxide-cockroachdb-exploration/proto-raw-2020-10-16.tgz
+copy: s3://oxide-cockroachdb-exploration/proto-raw.tgz to s3://oxide-cockroachdb-exploration/proto-raw-2020-10-16.tgz
+dap@zathras cockroachdb-testing-round2 $ aws s3 cp proto-raw-new.tgz s3://oxide-cockroachdb-exploration/proto-raw-2020-11-23.tgz
+upload: ./proto-raw-new.tgz to s3://oxide-cockroachdb-exploration/proto-raw-2020-11-23.tgz
+dap@zathras cockroachdb-testing-round2 $ aws s3 ls oxide-cockroachdb-exploration
+                           PRE data/
+2020-11-13 15:39:43 87348554912 cockroach-dump-kv-2020-11-11.sql
+2020-08-27 15:28:39   87156784 cockroachdb.tar.gz
+2020-11-23 14:03:34  198929508 proto-raw-2020-10-16.tgz
+2020-11-23 14:04:01  369013041 proto-raw-2020-11-23.tgz
+2020-10-16 16:39:48  198929508 proto-raw.tgz
+2020-09-14 16:00:45   93765576 vminit-cockroachdb.tgz
+2020-09-10 16:09:46   13412713 vminit-common.tgz
+2020-09-08 16:10:44   84117103 vminit-mon.tgz
+dap@zathras cockroachdb-testing-round2 $ aws s3 cp s3://oxide-cockroachdb-exploration/proto-raw-2020-11-23.tgz s3://oxide-cockroachdb-exploration/proto-raw.tgz
+copy: s3://oxide-cockroachdb-exploration/proto-raw-2020-11-23.tgz to s3://oxide-cockroachdb-exploration/proto-raw.tgz
+dap@zathras cockroachdb-testing-round2 $ aws s3 ls oxide-cockroachdb-exploration
+                           PRE data/
+2020-11-13 15:39:43 87348554912 cockroach-dump-kv-2020-11-11.sql
+2020-08-27 15:28:39   87156784 cockroachdb.tar.gz
+2020-11-23 14:03:34  198929508 proto-raw-2020-10-16.tgz
+2020-11-23 14:04:01  369013041 proto-raw-2020-11-23.tgz
+2020-11-23 14:52:20  369013041 proto-raw.tgz
+2020-09-14 16:00:45   93765576 vminit-cockroachdb.tgz
+2020-09-10 16:09:46   13412713 vminit-common.tgz
+2020-09-08 16:10:44   84117103 vminit-mon.tgz
+----
+
+
+
+
 === Summarizing data from schema changes
 
 Timeline (from above):
@@ -14063,4 +14235,3 @@ At the end, we'll want to `select count(*) from kv` in the "newkv" database and 
 === TODO next
 
 * update testing details and RFD 110 for the test restore that's in progress
-* don't forget to update proto-raw.tgz when I'm done here
