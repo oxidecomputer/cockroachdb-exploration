@@ -14035,12 +14035,32 @@ The graphs that I want for this are probably similar to the graphs for the expan
 
 I did the usual setup of directory structure and sequence of `chist` and `awk` commands, based on the sequence from the 2020-11-18-nvme-expansion-contraction analysis.  I gzip'd the data files before adding them to Git because they're a bit large.
 
+=== Testing a restore
+
+I tested a restore using the database dump I created earlier with `cockroach backup`:
+
+[source,text]
+----
+cockroachdb@nvmedb1:~$ /cockroachdb/bin/cockroach sql --insecure --host 192.168.1.52 -e 'CREATE DATABASE newkv';
+CREATE DATABASE
+
+Time: 23ms
+
+cockroachdb@nvmedb1:~$ cd /cockroachdb/backups/
+cockroachdb@nvmedb1:/cockroachdb/backups$  time /cockroachdb/bin/cockroach sql --insecure --host 192.168.1.52 --database newkv < cockroach-dump.out > restore.out 2>restore.err &
+[1] 2903
+
+----
+
+I'm waiting for this to complete.  Recall that the backup is 87348554912 bytes (81 GiB) and contains an estimated 43M records (43762680, to be precise).
+
+It's going pretty slow: 8 minutes in and we're about 2% done.  The output file is going to be about 43762680/100+1 lines long, or 437628 lines long.  In 568s (9m28s), it was 11966 lines long, or 2.7%.  That suggests a total time of 21037 seconds, or 5h51m, for an end time of 7:17PM PT.
+
+There seems to be plenty of resources available -- this is not very efficient.
+
+At the end, we'll want to `select count(*) from kv` in the "newkv" database and confirm that it matches 43762680.
+
 === TODO next
 
-* update "testing details" doc for RFD 110 with anything that's missing?
-** schema update
-*** client side data
-*** Grafana data on CPU, disk utilization
-** any other testing we did?
-* try a restore from the "cockroach dump" that I created (and update RFD)
+* update testing details and RFD 110 for the test restore that's in progress
 * don't forget to update proto-raw.tgz when I'm done here
