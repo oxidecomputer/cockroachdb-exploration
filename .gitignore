@@ -4,6 +4,9 @@ terraform-key
 terraform-key.pub
 terraform/.terraform
 vminit/cockroachdb/cockroachdb/bin/cockroach
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.3
+vminit/cockroachdb/cockroachdb/bin/cockroach-v20.2.0-rc.4
 vminit/cockroachdb/cockroachdb/bin/haproxy
 vminit/cockroachdb/cockroachdb/lib/libgcc_s.so.1
 vminit/cockroachdb/cockroachdb/lib/libstdc++.so.6
