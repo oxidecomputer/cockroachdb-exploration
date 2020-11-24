@@ -14455,13 +14455,54 @@ cockroachdb@nvmedb1:/cockroachdb$ nohup /cockroachdb/bin/cockroach sql --host 19
 
 Based on the mtime of restore.err, which is still empty, this started at 2020-11-24T03:23:21Z.
 
-=== TODO next
+== 2020-11-24
 
-* consider one more test doing schema change + slog device?
-** I've deployed the cluster for this
-** done: check zpool config, add slog device to pool
-** done: finish configuring cluster
-** done: download backup file to cluster
-** in progress: restore backup file to cluster
-** TODO: start workload, rerun schema test
-** TODO?: start workload, rerun expansion/contraction test
+I hope to complete the slog test today.
+
+The restore seems to have completed successfully overnight, based on the output in `restore.out` and the database, which is 124.9 GiB and 165 ranges.
+
+[source,text]
+----
+date="$(date +%FT%TZ)"
+for node in 192 237 141; do
+	nohup cockroach workload run kv --histograms kv-histograms-$node-$date.out --concurrency 4 --max-rate=333 --display-every=1s --read-percent 80 --tolerate-errors postgresql://root@192.168.1.$node:26257/kv?sslmode=disable > loadgen-summary-$node-$date.out 2>&1 &
+done
+----
+
+This started at 2020-11-24T16:32Z.  It finished at 17:26:49Z (33 minutes).  That's a fair bit faster than on the other cluster.  The impact was bad at first, but got a lot better.  Then I disabled the slog on one box and it made no difference!
+
+I'm going to retry this experiment with a heavier workload and start with all the slogs off.
+
+I disabled all the slogs around 17:39Z.  I'm modifying the workload to double the concurrency and the target operation rate.  I accidentally clobbered the client side data from the first one.  There were a few false starts around 17:42Z.  I'm going to wait until 17:44Z to start the workloads again.
+
+17:44Z: started the workload again at concurrency=8 and max-rate=667 (twice as much as before).  Again, the slogs are currently disabled.  I'm going to give this like 10 minutes before starting another schema change operation.
+
+18:03Z: started `ALTER TABLE` again.  Will wait a few minutes to observe impact.
+
+I onlined the slogs around 18:31:
+
+[source,text]
+----
+root@nvmedb1:~# date +%FT%TZ; zpool online tank c4t1d0; date +%FT%TZ;
+2020-11-24T18:31:24Z
+2020-11-24T18:31:25Z
+root@nvmedb1:~#
+
+root@nvmedb2:~# date +%FT%TZ; zpool online tank c4t1d0; date +%FT%TZ;
+2020-11-24T18:31:28Z
+2020-11-24T18:31:29Z
+root@nvmedb2:~#
+
+root@nvmedb3:~# date +%FT%TZ; zpool online tank c4t1d0; date +%FT%TZ;
+2020-11-24T18:31:29Z
+2020-11-24T18:31:30Z
+root@nvmedb3:~#
+----
+
+This didn't seem to make an observable difference in latency or throughput.  That said, the impact was a lot less to begin with in this cluster.  Critically, the average latency reported in Grafana during this test only reached about 1ms, with just a few excursions over that up to 6ms.  This is considerably less than what we saw last time, which was lots of average I/O samples in the 1-5ms range.
+
+The `ALTER TABLE` finished around 18:40Z.
+
+I stopped the workloads at 19:35Z.  My plan is to collect the client-side data and add it to the "Testing Details" doc.
+
+I processed them in the same way I did the last schema change client-side data.
