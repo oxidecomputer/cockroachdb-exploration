@@ -14232,6 +14232,236 @@ There seems to be plenty of resources available -- this is not very efficient.
 
 At the end, we'll want to `select count(*) from kv` in the "newkv" database and confirm that it matches 43762680.
 
+This restore completed around 2020-11-24T03:36:36Z.  Nothing was written to stderr.  stdout looked like this:
+
+[source,text]
+----
+root@nvmedb1:/cockroachdb/backups# ls -l
+total 170708281
+-rw-r--r--   1 cockroachdb other        271 Nov 11 22:04 cockroach-dump.err
+-rw-r--r--   1 cockroachdb other    87348554912 Nov 11 22:37 cockroach-dump.out
+-rw-r--r--   1 cockroachdb other          0 Nov 23 21:27 restore.err
+-rw-r--r--   1 cockroachdb other    4813909 Nov 24 03:36 restore.out
+root@nvmedb1:/cockroachdb/backups# sort restore.out  | uniq -c
+   1 CREATE TABLE
+437626 INSERT 100
+   1 INSERT 80
+----
+
+That works out to 43762680 total records, which is what we expected.
+
+According to the web UI, the "newkv" database is 124.9 GiB and 165 total ranges.  (By comparison, the "kv" database is 241 GiB with 297 total ranges.)  The table schema and replication zone config look identical.
+
+As for the total count reported via SQL:
+
+[source,text]
+----
+cockroachdb@loadgen0:~$ cockroach sql
+#
+# Welcome to the CockroachDB SQL shell.
+# All statements must be terminated by a semicolon.
+# To exit, type: \q.
+#
+# Client version: CockroachDB OSS v20.2.0-rc.3 (x86_64-pc-solaris2.11, built 2020/11/06 22:01:00, go1.15.3)
+# Server version: CockroachDB OSS v20.2.0 (x86_64-pc-solaris2.11, built 2020/11/11 20:41:23, go1.15.3)
+# Cluster ID: 5163af61-986b-40bf-80ac-fe74affc5072
+#
+# Enter \? for a brief introduction.
+#
+root@192.168.1.163:26257/defaultdb> use newkv;
+SET
+
+Time: 1ms total (execution 0ms / network 0ms)
+
+root@192.168.1.163:26257/newkv> select count(*) from kv;
+   count
+------------
+  43762680
+(1 row)
+
+Time: 48.067s total (execution 48.066s / network 0.001s)
+
+----
+
+Once again, that's what we expected.
+
+Based on the information above, the total time elapsed was about 6h 9m 36s.  That's not fast.
+
+=== Cleaning up older cluster
+
+I decided it was time to destroy my old (non-NVME) cluster.  All of the instances were stopped already.  `terraform destroy` completed pretty quickly and without issue.
+
+=== Deploying new i3.4xlarge cluster
+
+I decided I would also re-do the schema change test on a cluster with two NVME devices so that I can use one as a slog device.  I've modified vminit.sh to build the pool on the first device that it sees.
+
+I originally tried doing this deployment in the same AWS account in which I did my original testing (the same as the one in which I just destroyed the non-NVME cluster) just so I can reuse the same S3 bucket I was using for the previous Terraform config.  However, this account can't access the assets from the other account, so I'm switching to the other account to avoid having to reupload the assets to a new bucket.  This took some doing -- I think I ran into a Terraform bug where it had stored enough config in .terraform/terraform.tfstate to think it should look at the wrong S3 bucket, and even though I changed my config file to use a different bucket, it didn't respect that -- it wanted to load the wrong one.  I fixed this by removing `.terraform` altogether.  I believe there were no resources orphaned by this.
+
+This cluster will be twice as expensive as the previous one, at $1.60 / hour times 3 VMs, so I'll definitely want to clean this up as quickly as possible.  Still, I expect it will take at least 5 hours to regenerate the "kv" database so I want to do this overnight.
+
+I've deployed the cluster, and it looks the way I'd expect so far:
+
+[source,text]
+----
+root@nvmedb1:~# diskinfo
+TYPE    DISK                    VID      PID              SIZE          RMV SSD
+NVME    c3t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+NVME    c4t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+XEN     c2t0d0                  Xen      Virtual disk        2.00 GiB   no  no
+root@nvmedb1:~# zfs list
+NAME                  USED  AVAIL  REFER  MOUNTPOINT
+rpool                1.43G   332M   204K  /rpool
+rpool/ROOT           1.06G   332M   184K  legacy
+rpool/ROOT/b21be154  1.06G   332M  1.06G  legacy
+rpool/swap            371M   703M   104K  -
+tank                  262M  1.66T    24K  /tank
+tank/cockroachdb      262M  1.66T   262M  /cockroachdb
+tank/home            26.5K  1.66T  26.5K  /export/home
+root@nvmedb1:~# zpool status -v tank
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        tank        ONLINE       0     0     0
+          c3t1d0    ONLINE       0     0     0
+
+errors: No known data errors
+----
+
+Now, to add the log device:
+
+[source,text]
+----
+root@nvmedb1:~# zpool add tank log c4t1d0
+root@nvmedb1:~# zpool status -v tank
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        tank        ONLINE       0     0     0
+          c3t1d0    ONLINE       0     0     0
+        logs
+          c4t1d0    ONLINE       0     0     0
+
+errors: No known data errors
+----
+
+Now, for the other two nodes:
+
+[source,text]
+----
+root@nvmedb2:~# diskinfo
+TYPE    DISK                    VID      PID              SIZE          RMV SSD
+NVME    c3t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+NVME    c4t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+XEN     c2t0d0                  Xen      Virtual disk        2.00 GiB   no  no
+root@nvmedb2:~# zpool add tank log c4t1d0
+root@nvmedb2:~# zpool status -v
+  pool: rpool
+ state: ONLINE
+status: Some supported features are not enabled on the pool. The pool can
+        still be used, but some features are unavailable.
+action: Enable all features using 'zpool upgrade'. Once this is done,
+        the pool may no longer be accessible by software that does not support
+        the features. See zpool-features(5) for details.
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        rpool       ONLINE       0     0     0
+          c2t0d0    ONLINE       0     0     0
+
+errors: No known data errors
+
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        tank        ONLINE       0     0     0
+          c3t1d0    ONLINE       0     0     0
+        logs
+          c4t1d0    ONLINE       0     0     0
+
+errors: No known data errors
+root@nvmedb2:~#
+----
+
+[source,text]
+----
+root@nvmedb3:~# diskinfo
+TYPE    DISK                    VID      PID              SIZE          RMV SSD
+NVME    c3t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+NVME    c4t1d0                  Amazon   EC2 NVMe Instance Storage 1769.51 GiB   no  yes
+XEN     c2t0d0                  Xen      Virtual disk        2.00 GiB   no  no
+root@nvmedb3:~# zpool add tank log c4t1d0
+root@nvmedb3:~# zpool status -v
+  pool: rpool
+ state: ONLINE
+status: Some supported features are not enabled on the pool. The pool can
+        still be used, but some features are unavailable.
+action: Enable all features using 'zpool upgrade'. Once this is done,
+        the pool may no longer be accessible by software that does not support
+        the features. See zpool-features(5) for details.
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        rpool       ONLINE       0     0     0
+          c2t0d0    ONLINE       0     0     0
+
+errors: No known data errors
+
+  pool: tank
+ state: ONLINE
+  scan: none requested
+config:
+
+        NAME        STATE     READ WRITE CKSUM
+        tank        ONLINE       0     0     0
+          c3t1d0    ONLINE       0     0     0
+        logs
+          c4t1d0    ONLINE       0     0     0
+
+errors: No known data errors
+----
+
+Then I started cockroachdb on all three nodes to set up the cluster.
+
+While doing this, I discovered that I never updated the vminit tarballs to include the final v20.2.0 cockroach binary that I tested with.  I checked that the proto tarball is correct.  I manually put the right cockroach-v20.2.0 binary and "cockroach" symlink into place on each database node.  I later fixed the vminit tarball in the S3 bucket.
+
+I generated a presigned URL to fetch the SQL backup from S3 and I'm downloading that into nvmedb1 right now.  This will take about half an hour.
+
+Now I'm restoring it:
+
+[source,text]
+----
+cockroachdb@nvmedb1:/cockroachdb$ ls -l
+total 170708210
+drwxr-xr-x   2 cockroachdb staff          9 Nov 24 02:43 bin
+-rw-r--r--   1 root     root     87348554912 Nov 24 03:12 cockroach-dump-kv-2020-11-11.sql
+drwxr-x---   5 cockroachdb other         21 Nov 24 03:12 data
+drwxr-xr-x   2 cockroachdb staff          3 Nov 24 01:39 etc
+drwxr-xr-x   2 cockroachdb staff          4 Nov 10 00:44 lib
+drwxr-xr-x   2 cockroachdb staff          4 Nov 24 01:39 smf
+cockroachdb@nvmedb1:/cockroachdb$ nohup /cockroachdb/bin/cockroach sql --host 192.168.1.192 --insecure --database kv < /cockroachdb/cockroach-dump-kv-2020-11-11.sql > restore.out 2>restore.err &
+[1] 1971
+----
+
+Based on the mtime of restore.err, which is still empty, this started at 2020-11-24T03:23:21Z.
+
 === TODO next
 
-* update testing details and RFD 110 for the test restore that's in progress
+* consider one more test doing schema change + slog device?
+** I've deployed the cluster for this
+** done: check zpool config, add slog device to pool
+** done: finish configuring cluster
+** done: download backup file to cluster
+** in progress: restore backup file to cluster
+** TODO: start workload, rerun schema test
+** TODO?: start workload, rerun expansion/contraction test
