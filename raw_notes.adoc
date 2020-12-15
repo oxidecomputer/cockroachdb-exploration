@@ -14506,3 +14506,1012 @@ The `ALTER TABLE` finished around 18:40Z.
 I stopped the workloads at 19:35Z.  My plan is to collect the client-side data and add it to the "Testing Details" doc.
 
 I processed them in the same way I did the last schema change client-side data.
+
+== 2020-12-15
+
+With RFD 110 published for some time now, I'm cleaning up the remaining AWS infrastructure (load generators and monitoring VMs from two clusters).
+
+[source,text]
+----
+dap@zathras terraform $ aws as-session terraform destroy
+aws_iam_role.primary: Refreshing state... [id=primary_cluster_plus_slog]
+aws_vpc.crdb_exploration: Refreshing state... [id=vpc-0046d816354066085]
+aws_iam_role_policy.read_from_s3_bucket: Refreshing state... [id=primary_cluster_plus_slog:terraform-20201124013730285600000001]
+aws_iam_role_policy.read_ec2: Refreshing state... [id=primary_cluster_plus_slog:terraform-20201124013730285600000002]
+aws_iam_instance_profile.primary: Refreshing state... [id=terraform-20201124013730285600000003]
+aws_internet_gateway.gw: Refreshing state... [id=igw-020979392b1d22792]
+aws_subnet.crdb_exploration: Refreshing state... [id=subnet-0b2a2c0fd0ae9909a]
+aws_security_group.crdb_exploration: Refreshing state... [id=sg-072220b299ca86cc2]
+aws_route.r: Refreshing state... [id=r-rtb-0acf7992078970aa41080289494]
+aws_security_group_rule.crdb_exploration_out: Refreshing state... [id=sgrule-2773793207]
+aws_security_group_rule.crdb_exploration_ssh: Refreshing state... [id=sgrule-189765188]
+aws_security_group_rule.crdb_exploration_local_in: Refreshing state... [id=sgrule-3011038785]
+aws_instance.loadgen[0]: Refreshing state... [id=i-0bd4e0eaefe3d978f]
+aws_instance.mon[0]: Refreshing state... [id=i-07465c8430dc5e5ad]
+
+An execution plan has been generated and is shown below.
+Resource actions are indicated with the following symbols:
+  - destroy
+
+Terraform will perform the following actions:
+
+  # aws_iam_instance_profile.primary will be destroyed
+  - resource "aws_iam_instance_profile" "primary" {
+      - arn         = "arn:aws:iam::975255693414:instance-profile/terraform-20201124013730285600000003" -> null
+      - create_date = "2020-11-24T01:37:30Z" -> null
+      - id          = "terraform-20201124013730285600000003" -> null
+      - name        = "terraform-20201124013730285600000003" -> null
+      - path        = "/" -> null
+      - role        = "primary_cluster_plus_slog" -> null
+      - roles       = [
+          - "primary_cluster_plus_slog",
+        ] -> null
+      - unique_id   = "AIPA6GEOE5BTOWNYIJVB3" -> null
+    }
+
+  # aws_iam_role.primary will be destroyed
+  - resource "aws_iam_role" "primary" {
+      - arn                   = "arn:aws:iam::975255693414:role/primary_cluster_plus_slog" -> null
+      - assume_role_policy    = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action    = "sts:AssumeRole"
+                      - Effect    = "Allow"
+                      - Principal = {
+                          - Service = "ec2.amazonaws.com"
+                        }
+                      - Sid       = ""
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - create_date           = "2020-11-24T01:37:29Z" -> null
+      - force_detach_policies = false -> null
+      - id                    = "primary_cluster_plus_slog" -> null
+      - max_session_duration  = 3600 -> null
+      - name                  = "primary_cluster_plus_slog" -> null
+      - path                  = "/" -> null
+      - tags                  = {} -> null
+      - unique_id             = "AROA6GEOE5BTK3QO2QNFJ" -> null
+    }
+
+  # aws_iam_role_policy.read_ec2 will be destroyed
+  - resource "aws_iam_role_policy" "read_ec2" {
+      - id     = "primary_cluster_plus_slog:terraform-20201124013730285600000002" -> null
+      - name   = "terraform-20201124013730285600000002" -> null
+      - policy = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action   = "ec2:Describe*"
+                      - Effect   = "Allow"
+                      - Resource = "*"
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - role   = "primary_cluster_plus_slog" -> null
+    }
+
+  # aws_iam_role_policy.read_from_s3_bucket will be destroyed
+  - resource "aws_iam_role_policy" "read_from_s3_bucket" {
+      - id     = "primary_cluster_plus_slog:terraform-20201124013730285600000001" -> null
+      - name   = "terraform-20201124013730285600000001" -> null
+      - policy = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action   = [
+                          - "s3:List*",
+                        ]
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:s3:::oxide-cockroachdb-exploration-round2",
+                        ]
+                    },
+                  - {
+                      - Action   = [
+                          - "s3:Get*",
+                        ]
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:s3:::oxide-cockroachdb-exploration-round2/*",
+                        ]
+                    },
+                  - {
+                      - Action   = "ec2:Describe*"
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:ec2:us-west-2:*",
+                        ]
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - role   = "primary_cluster_plus_slog" -> null
+    }
+
+  # aws_instance.loadgen[0] will be destroyed
+  - resource "aws_instance" "loadgen" {
+      - ami                          = "ami-0bc33ade03d07d4d3" -> null
+      - arn                          = "arn:aws:ec2:us-west-2:975255693414:instance/i-0bd4e0eaefe3d978f" -> null
+      - associate_public_ip_address  = true -> null
+      - availability_zone            = "us-west-2a" -> null
+      - cpu_core_count               = 1 -> null
+      - cpu_threads_per_core         = 2 -> null
+      - disable_api_termination      = false -> null
+      - ebs_optimized                = false -> null
+      - get_password_data            = false -> null
+      - hibernation                  = false -> null
+      - iam_instance_profile         = "terraform-20201124013730285600000003" -> null
+      - id                           = "i-0bd4e0eaefe3d978f" -> null
+      - instance_state               = "running" -> null
+      - instance_type                = "c4.large" -> null
+      - ipv6_address_count           = 0 -> null
+      - ipv6_addresses               = [] -> null
+      - key_name                     = "dap-terraform" -> null
+      - monitoring                   = false -> null
+      - primary_network_interface_id = "eni-0bc966a60c589c9c4" -> null
+      - private_dns                  = "ip-192-168-1-7.us-west-2.compute.internal" -> null
+      - private_ip                   = "192.168.1.7" -> null
+      - public_dns                   = "ec2-35-167-252-175.us-west-2.compute.amazonaws.com" -> null
+      - public_ip                    = "35.167.252.175" -> null
+      - security_groups              = [] -> null
+      - source_dest_check            = true -> null
+      - subnet_id                    = "subnet-0b2a2c0fd0ae9909a" -> null
+      - tags                         = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration_loadgen_0"
+          - "Project" = "crdb_exploration"
+          - "Role"    = "crdb_exploration_loadgen"
+        } -> null
+      - tenancy                      = "default" -> null
+      - volume_tags                  = {} -> null
+      - vpc_security_group_ids       = [
+          - "sg-072220b299ca86cc2",
+        ] -> null
+
+      - metadata_options {
+          - http_endpoint               = "enabled" -> null
+          - http_put_response_hop_limit = 1 -> null
+          - http_tokens                 = "optional" -> null
+        }
+
+      - root_block_device {
+          - delete_on_termination = true -> null
+          - device_name           = "/dev/sda1" -> null
+          - encrypted             = false -> null
+          - iops                  = 100 -> null
+          - volume_id             = "vol-037c921b2bf53f6cb" -> null
+          - volume_size           = 10 -> null
+          - volume_type           = "gp2" -> null
+        }
+    }
+
+  # aws_instance.mon[0] will be destroyed
+  - resource "aws_instance" "mon" {
+      - ami                          = "ami-0bc33ade03d07d4d3" -> null
+      - arn                          = "arn:aws:ec2:us-west-2:975255693414:instance/i-07465c8430dc5e5ad" -> null
+      - associate_public_ip_address  = true -> null
+      - availability_zone            = "us-west-2a" -> null
+      - cpu_core_count               = 2 -> null
+      - cpu_threads_per_core         = 1 -> null
+      - disable_api_termination      = false -> null
+      - ebs_optimized                = false -> null
+      - get_password_data            = false -> null
+      - hibernation                  = false -> null
+      - iam_instance_profile         = "terraform-20201124013730285600000003" -> null
+      - id                           = "i-07465c8430dc5e5ad" -> null
+      - instance_state               = "running" -> null
+      - instance_type                = "t2.medium" -> null
+      - ipv6_address_count           = 0 -> null
+      - ipv6_addresses               = [] -> null
+      - key_name                     = "dap-terraform" -> null
+      - monitoring                   = false -> null
+      - primary_network_interface_id = "eni-05240b0c27da2a8a2" -> null
+      - private_dns                  = "ip-192-168-1-31.us-west-2.compute.internal" -> null
+      - private_ip                   = "192.168.1.31" -> null
+      - public_dns                   = "ec2-52-42-5-2.us-west-2.compute.amazonaws.com" -> null
+      - public_ip                    = "52.42.5.2" -> null
+      - security_groups              = [] -> null
+      - source_dest_check            = true -> null
+      - subnet_id                    = "subnet-0b2a2c0fd0ae9909a" -> null
+      - tags                         = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration_mon_0"
+          - "Project" = "crdb_exploration"
+          - "Role"    = "crdb_exploration_mon"
+        } -> null
+      - tenancy                      = "default" -> null
+      - volume_tags                  = {} -> null
+      - vpc_security_group_ids       = [
+          - "sg-072220b299ca86cc2",
+        ] -> null
+
+      - credit_specification {
+          - cpu_credits = "standard" -> null
+        }
+
+      - metadata_options {
+          - http_endpoint               = "enabled" -> null
+          - http_put_response_hop_limit = 1 -> null
+          - http_tokens                 = "optional" -> null
+        }
+
+      - root_block_device {
+          - delete_on_termination = true -> null
+          - device_name           = "/dev/sda1" -> null
+          - encrypted             = false -> null
+          - iops                  = 100 -> null
+          - volume_id             = "vol-0c6130e9dde40b26a" -> null
+          - volume_size           = 30 -> null
+          - volume_type           = "gp2" -> null
+        }
+    }
+
+  # aws_internet_gateway.gw will be destroyed
+  - resource "aws_internet_gateway" "gw" {
+      - arn      = "arn:aws:ec2:us-west-2:975255693414:internet-gateway/igw-020979392b1d22792" -> null
+      - id       = "igw-020979392b1d22792" -> null
+      - owner_id = "975255693414" -> null
+      - tags     = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id   = "vpc-0046d816354066085" -> null
+    }
+
+  # aws_route.r will be destroyed
+  - resource "aws_route" "r" {
+      - destination_cidr_block = "0.0.0.0/0" -> null
+      - gateway_id             = "igw-020979392b1d22792" -> null
+      - id                     = "r-rtb-0acf7992078970aa41080289494" -> null
+      - origin                 = "CreateRoute" -> null
+      - route_table_id         = "rtb-0acf7992078970aa4" -> null
+      - state                  = "active" -> null
+    }
+
+  # aws_security_group.crdb_exploration will be destroyed
+  - resource "aws_security_group" "crdb_exploration" {
+      - arn                    = "arn:aws:ec2:us-west-2:975255693414:security-group/sg-072220b299ca86cc2" -> null
+      - description            = "Managed by Terraform" -> null
+      - egress                 = [
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = ""
+              - from_port        = 0
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "-1"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 0
+            },
+        ] -> null
+      - id                     = "sg-072220b299ca86cc2" -> null
+      - ingress                = [
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = ""
+              - from_port        = 22
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 22
+            },
+          - {
+              - cidr_blocks      = []
+              - description      = ""
+              - from_port        = 0
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "-1"
+              - security_groups  = []
+              - self             = true
+              - to_port          = 0
+            },
+        ] -> null
+      - name                   = "crdb_exploration_plus_slog" -> null
+      - owner_id               = "975255693414" -> null
+      - revoke_rules_on_delete = false -> null
+      - tags                   = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id                 = "vpc-0046d816354066085" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_local_in will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_local_in" {
+      - cidr_blocks              = [] -> null
+      - from_port                = 0 -> null
+      - id                       = "sgrule-3011038785" -> null
+      - ipv6_cidr_blocks         = [] -> null
+      - prefix_list_ids          = [] -> null
+      - protocol                 = "-1" -> null
+      - security_group_id        = "sg-072220b299ca86cc2" -> null
+      - self                     = false -> null
+      - source_security_group_id = "sg-072220b299ca86cc2" -> null
+      - to_port                  = 0 -> null
+      - type                     = "ingress" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_out will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_out" {
+      - cidr_blocks       = [
+          - "0.0.0.0/0",
+        ] -> null
+      - from_port         = 0 -> null
+      - id                = "sgrule-2773793207" -> null
+      - ipv6_cidr_blocks  = [] -> null
+      - prefix_list_ids   = [] -> null
+      - protocol          = "-1" -> null
+      - security_group_id = "sg-072220b299ca86cc2" -> null
+      - self              = false -> null
+      - to_port           = 0 -> null
+      - type              = "egress" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_ssh will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_ssh" {
+      - cidr_blocks       = [
+          - "0.0.0.0/0",
+        ] -> null
+      - from_port         = 22 -> null
+      - id                = "sgrule-189765188" -> null
+      - ipv6_cidr_blocks  = [] -> null
+      - prefix_list_ids   = [] -> null
+      - protocol          = "tcp" -> null
+      - security_group_id = "sg-072220b299ca86cc2" -> null
+      - self              = false -> null
+      - to_port           = 22 -> null
+      - type              = "ingress" -> null
+    }
+
+  # aws_subnet.crdb_exploration will be destroyed
+  - resource "aws_subnet" "crdb_exploration" {
+      - arn                             = "arn:aws:ec2:us-west-2:975255693414:subnet/subnet-0b2a2c0fd0ae9909a" -> null
+      - assign_ipv6_address_on_creation = false -> null
+      - availability_zone               = "us-west-2a" -> null
+      - availability_zone_id            = "usw2-az1" -> null
+      - cidr_block                      = "192.168.1.0/24" -> null
+      - id                              = "subnet-0b2a2c0fd0ae9909a" -> null
+      - map_public_ip_on_launch         = false -> null
+      - owner_id                        = "975255693414" -> null
+      - tags                            = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id                          = "vpc-0046d816354066085" -> null
+    }
+
+  # aws_vpc.crdb_exploration will be destroyed
+  - resource "aws_vpc" "crdb_exploration" {
+      - arn                              = "arn:aws:ec2:us-west-2:975255693414:vpc/vpc-0046d816354066085" -> null
+      - assign_generated_ipv6_cidr_block = false -> null
+      - cidr_block                       = "192.168.0.0/16" -> null
+      - default_network_acl_id           = "acl-01e726d2085935f8a" -> null
+      - default_route_table_id           = "rtb-0acf7992078970aa4" -> null
+      - default_security_group_id        = "sg-090205d4e5a677cbc" -> null
+      - dhcp_options_id                  = "dopt-04d4917c" -> null
+      - enable_classiclink               = false -> null
+      - enable_classiclink_dns_support   = false -> null
+      - enable_dns_hostnames             = true -> null
+      - enable_dns_support               = true -> null
+      - id                               = "vpc-0046d816354066085" -> null
+      - instance_tenancy                 = "default" -> null
+      - main_route_table_id              = "rtb-0acf7992078970aa4" -> null
+      - owner_id                         = "975255693414" -> null
+      - tags                             = {
+          - "Cluster" = "plus_slog"
+          - "Name"    = "crdb_exploration"
+        } -> null
+    }
+
+Plan: 0 to add, 0 to change, 14 to destroy.
+
+Changes to Outputs:
+  - loadgen_external_ip = [
+      - "35.167.252.175",
+    ] -> null
+  - loadgen_internal_ip = [
+      - "192.168.1.7",
+    ] -> null
+  - mon_external_ip     = [
+      - "52.42.5.2",
+    ] -> null
+  - mon_internal_ip     = [
+      - "192.168.1.31",
+    ] -> null
+
+Do you really want to destroy all resources?
+  Terraform will destroy all your managed infrastructure, as shown above.
+  There is no undo. Only 'yes' will be accepted to confirm.
+
+  Enter a value: yes 
+
+aws_iam_role_policy.read_ec2: Destroying... [id=primary_cluster_plus_slog:terraform-20201124013730285600000002]
+aws_route.r: Destroying... [id=r-rtb-0acf7992078970aa41080289494]
+aws_security_group_rule.crdb_exploration_local_in: Destroying... [id=sgrule-3011038785]
+aws_security_group_rule.crdb_exploration_ssh: Destroying... [id=sgrule-189765188]
+aws_iam_role_policy.read_from_s3_bucket: Destroying... [id=primary_cluster_plus_slog:terraform-20201124013730285600000001]
+aws_security_group_rule.crdb_exploration_out: Destroying... [id=sgrule-2773793207]
+aws_instance.loadgen[0]: Destroying... [id=i-0bd4e0eaefe3d978f]
+aws_instance.mon[0]: Destroying... [id=i-07465c8430dc5e5ad]
+aws_route.r: Destruction complete after 0s
+aws_internet_gateway.gw: Destroying... [id=igw-020979392b1d22792]
+aws_iam_role_policy.read_from_s3_bucket: Destruction complete after 0s
+aws_iam_role_policy.read_ec2: Destruction complete after 0s
+aws_security_group_rule.crdb_exploration_ssh: Destruction complete after 0s
+aws_security_group_rule.crdb_exploration_local_in: Destruction complete after 1s
+aws_security_group_rule.crdb_exploration_out: Destruction complete after 1s
+aws_instance.mon[0]: Still destroying... [id=i-07465c8430dc5e5ad, 10s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-0bd4e0eaefe3d978f, 10s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-020979392b1d22792, 10s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-0bd4e0eaefe3d978f, 20s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-07465c8430dc5e5ad, 20s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-020979392b1d22792, 20s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-0bd4e0eaefe3d978f, 30s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-07465c8430dc5e5ad, 30s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-020979392b1d22792, 30s elapsed]
+aws_instance.loadgen[0]: Destruction complete after 30s
+aws_internet_gateway.gw: Destruction complete after 37s
+aws_instance.mon[0]: Still destroying... [id=i-07465c8430dc5e5ad, 40s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-07465c8430dc5e5ad, 50s elapsed]
+aws_instance.mon[0]: Destruction complete after 50s
+aws_iam_instance_profile.primary: Destroying... [id=terraform-20201124013730285600000003]
+aws_subnet.crdb_exploration: Destroying... [id=subnet-0b2a2c0fd0ae9909a]
+aws_security_group.crdb_exploration: Destroying... [id=sg-072220b299ca86cc2]
+aws_security_group.crdb_exploration: Destruction complete after 1s
+aws_subnet.crdb_exploration: Destruction complete after 1s
+aws_vpc.crdb_exploration: Destroying... [id=vpc-0046d816354066085]
+aws_iam_instance_profile.primary: Destruction complete after 1s
+aws_iam_role.primary: Destroying... [id=primary_cluster_plus_slog]
+aws_vpc.crdb_exploration: Destruction complete after 1s
+aws_iam_role.primary: Destruction complete after 1s
+
+Destroy complete! Resources: 14 destroyed.
+----
+
+[source,text]
+----
+dap@zathras terraform $ aws as-session terraform destroy
+aws_vpc.crdb_exploration: Refreshing state... [id=vpc-0af4bd79e3d2d7c59]
+aws_iam_role.primary: Refreshing state... [id=primary_cluster_main]
+aws_iam_role_policy.read_ec2: Refreshing state... [id=primary_cluster_main:terraform-20201102221837276800000001]
+aws_iam_role_policy.read_from_s3_bucket: Refreshing state... [id=primary_cluster_main:terraform-20201102221837276900000002]
+aws_iam_instance_profile.primary: Refreshing state... [id=terraform-20201028224332426000000003]
+aws_internet_gateway.gw: Refreshing state... [id=igw-0d58ff9b6332ba67a]
+aws_subnet.crdb_exploration: Refreshing state... [id=subnet-04175b05dd9c09893]
+aws_security_group.crdb_exploration: Refreshing state... [id=sg-02cbe8fb2fba3cf82]
+aws_route.r: Refreshing state... [id=r-rtb-0f270c4766e3903971080289494]
+aws_security_group_rule.crdb_exploration_ssh: Refreshing state... [id=sgrule-24718610]
+aws_security_group_rule.crdb_exploration_out: Refreshing state... [id=sgrule-1186955126]
+aws_security_group_rule.crdb_exploration_local_in: Refreshing state... [id=sgrule-3652031355]
+aws_instance.loadgen[0]: Refreshing state... [id=i-05653650717759527]
+aws_instance.mon[0]: Refreshing state... [id=i-03a7d990184990770]
+
+An execution plan has been generated and is shown below.
+Resource actions are indicated with the following symbols:
+  - destroy
+
+Terraform will perform the following actions:
+
+  # aws_iam_instance_profile.primary will be destroyed
+  - resource "aws_iam_instance_profile" "primary" {
+      - arn         = "arn:aws:iam::975255693414:instance-profile/terraform-20201028224332426000000003" -> null
+      - create_date = "2020-10-28T22:43:32Z" -> null
+      - id          = "terraform-20201028224332426000000003" -> null
+      - name        = "terraform-20201028224332426000000003" -> null
+      - path        = "/" -> null
+      - role        = "primary_cluster_main" -> null
+      - roles       = [
+          - "primary_cluster_main",
+        ] -> null
+      - unique_id   = "AIPA6GEOE5BTDHUZ33BB7" -> null
+    }
+
+  # aws_iam_role.primary will be destroyed
+  - resource "aws_iam_role" "primary" {
+      - arn                   = "arn:aws:iam::975255693414:role/primary_cluster_main" -> null
+      - assume_role_policy    = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action    = "sts:AssumeRole"
+                      - Effect    = "Allow"
+                      - Principal = {
+                          - Service = "ec2.amazonaws.com"
+                        }
+                      - Sid       = ""
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - create_date           = "2020-11-02T22:18:36Z" -> null
+      - force_detach_policies = false -> null
+      - id                    = "primary_cluster_main" -> null
+      - max_session_duration  = 3600 -> null
+      - name                  = "primary_cluster_main" -> null
+      - path                  = "/" -> null
+      - tags                  = {} -> null
+      - unique_id             = "AROA6GEOE5BTHLWCABA6F" -> null
+    }
+
+  # aws_iam_role_policy.read_ec2 will be destroyed
+  - resource "aws_iam_role_policy" "read_ec2" {
+      - id     = "primary_cluster_main:terraform-20201102221837276800000001" -> null
+      - name   = "terraform-20201102221837276800000001" -> null
+      - policy = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action   = "ec2:Describe*"
+                      - Effect   = "Allow"
+                      - Resource = "*"
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - role   = "primary_cluster_main" -> null
+    }
+
+  # aws_iam_role_policy.read_from_s3_bucket will be destroyed
+  - resource "aws_iam_role_policy" "read_from_s3_bucket" {
+      - id     = "primary_cluster_main:terraform-20201102221837276900000002" -> null
+      - name   = "terraform-20201102221837276900000002" -> null
+      - policy = jsonencode(
+            {
+              - Statement = [
+                  - {
+                      - Action   = [
+                          - "s3:List*",
+                        ]
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:s3:::oxide-cockroachdb-exploration-round2",
+                        ]
+                    },
+                  - {
+                      - Action   = [
+                          - "s3:Get*",
+                        ]
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:s3:::oxide-cockroachdb-exploration-round2/*",
+                        ]
+                    },
+                  - {
+                      - Action   = "ec2:Describe*"
+                      - Effect   = "Allow"
+                      - Resource = [
+                          - "arn:aws:ec2:us-west-2:*",
+                        ]
+                    },
+                ]
+              - Version   = "2012-10-17"
+            }
+        ) -> null
+      - role   = "primary_cluster_main" -> null
+    }
+
+  # aws_instance.loadgen[0] will be destroyed
+  - resource "aws_instance" "loadgen" {
+      - ami                          = "ami-0bc33ade03d07d4d3" -> null
+      - arn                          = "arn:aws:ec2:us-west-2:975255693414:instance/i-05653650717759527" -> null
+      - associate_public_ip_address  = true -> null
+      - availability_zone            = "us-west-2a" -> null
+      - cpu_core_count               = 1 -> null
+      - cpu_threads_per_core         = 2 -> null
+      - disable_api_termination      = false -> null
+      - ebs_optimized                = false -> null
+      - get_password_data            = false -> null
+      - hibernation                  = false -> null
+      - iam_instance_profile         = "terraform-20201028224332426000000003" -> null
+      - id                           = "i-05653650717759527" -> null
+      - instance_state               = "running" -> null
+      - instance_type                = "c4.large" -> null
+      - ipv6_address_count           = 0 -> null
+      - ipv6_addresses               = [] -> null
+      - key_name                     = "dap-terraform" -> null
+      - monitoring                   = false -> null
+      - primary_network_interface_id = "eni-05b69047fe405ee0c" -> null
+      - private_dns                  = "ip-192-168-1-163.us-west-2.compute.internal" -> null
+      - private_ip                   = "192.168.1.163" -> null
+      - public_dns                   = "ec2-34-218-248-57.us-west-2.compute.amazonaws.com" -> null
+      - public_ip                    = "34.218.248.57" -> null
+      - security_groups              = [] -> null
+      - source_dest_check            = true -> null
+      - subnet_id                    = "subnet-04175b05dd9c09893" -> null
+      - tags                         = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration_loadgen_0"
+          - "Project" = "crdb_exploration"
+          - "Role"    = "crdb_exploration_loadgen"
+        } -> null
+      - tenancy                      = "default" -> null
+      - volume_tags                  = {} -> null
+      - vpc_security_group_ids       = [
+          - "sg-02cbe8fb2fba3cf82",
+        ] -> null
+
+      - metadata_options {
+          - http_endpoint               = "enabled" -> null
+          - http_put_response_hop_limit = 1 -> null
+          - http_tokens                 = "optional" -> null
+        }
+
+      - root_block_device {
+          - delete_on_termination = true -> null
+          - device_name           = "/dev/sda1" -> null
+          - encrypted             = false -> null
+          - iops                  = 100 -> null
+          - volume_id             = "vol-057a44903781e7b8f" -> null
+          - volume_size           = 10 -> null
+          - volume_type           = "gp2" -> null
+        }
+    }
+
+  # aws_instance.mon[0] will be destroyed
+  - resource "aws_instance" "mon" {
+      - ami                          = "ami-0bc33ade03d07d4d3" -> null
+      - arn                          = "arn:aws:ec2:us-west-2:975255693414:instance/i-03a7d990184990770" -> null
+      - associate_public_ip_address  = true -> null
+      - availability_zone            = "us-west-2a" -> null
+      - cpu_core_count               = 2 -> null
+      - cpu_threads_per_core         = 1 -> null
+      - disable_api_termination      = false -> null
+      - ebs_optimized                = false -> null
+      - get_password_data            = false -> null
+      - hibernation                  = false -> null
+      - iam_instance_profile         = "terraform-20201028224332426000000003" -> null
+      - id                           = "i-03a7d990184990770" -> null
+      - instance_state               = "running" -> null
+      - instance_type                = "t2.medium" -> null
+      - ipv6_address_count           = 0 -> null
+      - ipv6_addresses               = [] -> null
+      - key_name                     = "dap-terraform" -> null
+      - monitoring                   = false -> null
+      - primary_network_interface_id = "eni-074b18e99e32019fe" -> null
+      - private_dns                  = "ip-192-168-1-209.us-west-2.compute.internal" -> null
+      - private_ip                   = "192.168.1.209" -> null
+      - public_dns                   = "ec2-34-219-70-61.us-west-2.compute.amazonaws.com" -> null
+      - public_ip                    = "34.219.70.61" -> null
+      - security_groups              = [] -> null
+      - source_dest_check            = true -> null
+      - subnet_id                    = "subnet-04175b05dd9c09893" -> null
+      - tags                         = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration_mon_0"
+          - "Project" = "crdb_exploration"
+          - "Role"    = "crdb_exploration_mon"
+        } -> null
+      - tenancy                      = "default" -> null
+      - volume_tags                  = {} -> null
+      - vpc_security_group_ids       = [
+          - "sg-02cbe8fb2fba3cf82",
+        ] -> null
+
+      - credit_specification {
+          - cpu_credits = "standard" -> null
+        }
+
+      - metadata_options {
+          - http_endpoint               = "enabled" -> null
+          - http_put_response_hop_limit = 1 -> null
+          - http_tokens                 = "optional" -> null
+        }
+
+      - root_block_device {
+          - delete_on_termination = true -> null
+          - device_name           = "/dev/sda1" -> null
+          - encrypted             = false -> null
+          - iops                  = 100 -> null
+          - volume_id             = "vol-0fc08710d9c6b2bc3" -> null
+          - volume_size           = 30 -> null
+          - volume_type           = "gp2" -> null
+        }
+    }
+
+  # aws_internet_gateway.gw will be destroyed
+  - resource "aws_internet_gateway" "gw" {
+      - arn      = "arn:aws:ec2:us-west-2:975255693414:internet-gateway/igw-0d58ff9b6332ba67a" -> null
+      - id       = "igw-0d58ff9b6332ba67a" -> null
+      - owner_id = "975255693414" -> null
+      - tags     = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id   = "vpc-0af4bd79e3d2d7c59" -> null
+    }
+
+  # aws_route.r will be destroyed
+  - resource "aws_route" "r" {
+      - destination_cidr_block = "0.0.0.0/0" -> null
+      - gateway_id             = "igw-0d58ff9b6332ba67a" -> null
+      - id                     = "r-rtb-0f270c4766e3903971080289494" -> null
+      - origin                 = "CreateRoute" -> null
+      - route_table_id         = "rtb-0f270c4766e390397" -> null
+      - state                  = "active" -> null
+    }
+
+  # aws_security_group.crdb_exploration will be destroyed
+  - resource "aws_security_group" "crdb_exploration" {
+      - arn                    = "arn:aws:ec2:us-west-2:975255693414:security-group/sg-02cbe8fb2fba3cf82" -> null
+      - description            = "Managed by Terraform" -> null
+      - egress                 = [
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = ""
+              - from_port        = 0
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "-1"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 0
+            },
+        ] -> null
+      - id                     = "sg-02cbe8fb2fba3cf82" -> null
+      - ingress                = [
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = ""
+              - from_port        = 22
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 22
+            },
+          - {
+              - cidr_blocks      = []
+              - description      = ""
+              - from_port        = 0
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "-1"
+              - security_groups  = []
+              - self             = true
+              - to_port          = 0
+            },
+        ] -> null
+      - name                   = "crdb_exploration_main" -> null
+      - owner_id               = "975255693414" -> null
+      - revoke_rules_on_delete = false -> null
+      - tags                   = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id                 = "vpc-0af4bd79e3d2d7c59" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_local_in will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_local_in" {
+      - cidr_blocks              = [] -> null
+      - from_port                = 0 -> null
+      - id                       = "sgrule-3652031355" -> null
+      - ipv6_cidr_blocks         = [] -> null
+      - prefix_list_ids          = [] -> null
+      - protocol                 = "-1" -> null
+      - security_group_id        = "sg-02cbe8fb2fba3cf82" -> null
+      - self                     = false -> null
+      - source_security_group_id = "sg-02cbe8fb2fba3cf82" -> null
+      - to_port                  = 0 -> null
+      - type                     = "ingress" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_out will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_out" {
+      - cidr_blocks       = [
+          - "0.0.0.0/0",
+        ] -> null
+      - from_port         = 0 -> null
+      - id                = "sgrule-1186955126" -> null
+      - ipv6_cidr_blocks  = [] -> null
+      - prefix_list_ids   = [] -> null
+      - protocol          = "-1" -> null
+      - security_group_id = "sg-02cbe8fb2fba3cf82" -> null
+      - self              = false -> null
+      - to_port           = 0 -> null
+      - type              = "egress" -> null
+    }
+
+  # aws_security_group_rule.crdb_exploration_ssh will be destroyed
+  - resource "aws_security_group_rule" "crdb_exploration_ssh" {
+      - cidr_blocks       = [
+          - "0.0.0.0/0",
+        ] -> null
+      - from_port         = 22 -> null
+      - id                = "sgrule-24718610" -> null
+      - ipv6_cidr_blocks  = [] -> null
+      - prefix_list_ids   = [] -> null
+      - protocol          = "tcp" -> null
+      - security_group_id = "sg-02cbe8fb2fba3cf82" -> null
+      - self              = false -> null
+      - to_port           = 22 -> null
+      - type              = "ingress" -> null
+    }
+
+  # aws_subnet.crdb_exploration will be destroyed
+  - resource "aws_subnet" "crdb_exploration" {
+      - arn                             = "arn:aws:ec2:us-west-2:975255693414:subnet/subnet-04175b05dd9c09893" -> null
+      - assign_ipv6_address_on_creation = false -> null
+      - availability_zone               = "us-west-2a" -> null
+      - availability_zone_id            = "usw2-az1" -> null
+      - cidr_block                      = "192.168.1.0/24" -> null
+      - id                              = "subnet-04175b05dd9c09893" -> null
+      - map_public_ip_on_launch         = false -> null
+      - owner_id                        = "975255693414" -> null
+      - tags                            = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration"
+        } -> null
+      - vpc_id                          = "vpc-0af4bd79e3d2d7c59" -> null
+    }
+
+  # aws_vpc.crdb_exploration will be destroyed
+  - resource "aws_vpc" "crdb_exploration" {
+      - arn                              = "arn:aws:ec2:us-west-2:975255693414:vpc/vpc-0af4bd79e3d2d7c59" -> null
+      - assign_generated_ipv6_cidr_block = false -> null
+      - cidr_block                       = "192.168.0.0/16" -> null
+      - default_network_acl_id           = "acl-0f0297c8c34621b3e" -> null
+      - default_route_table_id           = "rtb-0f270c4766e390397" -> null
+      - default_security_group_id        = "sg-042c66bef19dfa619" -> null
+      - dhcp_options_id                  = "dopt-04d4917c" -> null
+      - enable_classiclink               = false -> null
+      - enable_classiclink_dns_support   = false -> null
+      - enable_dns_hostnames             = true -> null
+      - enable_dns_support               = true -> null
+      - id                               = "vpc-0af4bd79e3d2d7c59" -> null
+      - instance_tenancy                 = "default" -> null
+      - main_route_table_id              = "rtb-0f270c4766e390397" -> null
+      - owner_id                         = "975255693414" -> null
+      - tags                             = {
+          - "Cluster" = "main"
+          - "Name"    = "crdb_exploration"
+        } -> null
+    }
+
+Plan: 0 to add, 0 to change, 14 to destroy.
+
+Changes to Outputs:
+  - db_external_ip      = [] -> null
+  - db_internal_ip      = [] -> null
+  - loadgen_external_ip = [
+      - "34.218.248.57",
+    ] -> null
+  - loadgen_internal_ip = [
+      - "192.168.1.163",
+    ] -> null
+  - mon_external_ip     = [
+      - "34.219.70.61",
+    ] -> null
+  - mon_internal_ip     = [
+      - "192.168.1.209",
+    ] -> null
+
+Do you really want to destroy all resources?
+  Terraform will destroy all your managed infrastructure, as shown above.
+  There is no undo. Only 'yes' will be accepted to confirm.
+
+  Enter a value: yes
+
+aws_iam_role_policy.read_ec2: Destroying... [id=primary_cluster_main:terraform-20201102221837276800000001]
+aws_route.r: Destroying... [id=r-rtb-0f270c4766e3903971080289494]
+aws_security_group_rule.crdb_exploration_local_in: Destroying... [id=sgrule-3652031355]
+aws_iam_role_policy.read_from_s3_bucket: Destroying... [id=primary_cluster_main:terraform-20201102221837276900000002]
+aws_security_group_rule.crdb_exploration_out: Destroying... [id=sgrule-1186955126]
+aws_security_group_rule.crdb_exploration_ssh: Destroying... [id=sgrule-24718610]
+aws_instance.mon[0]: Destroying... [id=i-03a7d990184990770]
+aws_instance.loadgen[0]: Destroying... [id=i-05653650717759527]
+aws_route.r: Destruction complete after 0s
+aws_internet_gateway.gw: Destroying... [id=igw-0d58ff9b6332ba67a]
+aws_iam_role_policy.read_ec2: Destruction complete after 0s
+aws_iam_role_policy.read_from_s3_bucket: Destruction complete after 0s
+aws_security_group_rule.crdb_exploration_ssh: Destruction complete after 1s
+aws_security_group_rule.crdb_exploration_out: Destruction complete after 1s
+aws_security_group_rule.crdb_exploration_local_in: Destruction complete after 2s
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 10s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-05653650717759527, 10s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-0d58ff9b6332ba67a, 10s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 20s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-05653650717759527, 20s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-0d58ff9b6332ba67a, 20s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 30s elapsed]
+aws_instance.loadgen[0]: Still destroying... [id=i-05653650717759527, 30s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-0d58ff9b6332ba67a, 30s elapsed]
+aws_instance.loadgen[0]: Destruction complete after 30s
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 40s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-0d58ff9b6332ba67a, 40s elapsed]
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 50s elapsed]
+aws_internet_gateway.gw: Still destroying... [id=igw-0d58ff9b6332ba67a, 50s elapsed]
+aws_internet_gateway.gw: Destruction complete after 59s
+aws_instance.mon[0]: Still destroying... [id=i-03a7d990184990770, 1m0s elapsed]
+aws_instance.mon[0]: Destruction complete after 1m1s
+aws_subnet.crdb_exploration: Destroying... [id=subnet-04175b05dd9c09893]
+aws_iam_instance_profile.primary: Destroying... [id=terraform-20201028224332426000000003]
+aws_security_group.crdb_exploration: Destroying... [id=sg-02cbe8fb2fba3cf82]
+aws_security_group.crdb_exploration: Destruction complete after 1s
+aws_subnet.crdb_exploration: Destruction complete after 1s
+aws_vpc.crdb_exploration: Destroying... [id=vpc-0af4bd79e3d2d7c59]
+aws_iam_instance_profile.primary: Destruction complete after 1s
+aws_iam_role.primary: Destroying... [id=primary_cluster_main]
+aws_vpc.crdb_exploration: Destruction complete after 0s
+aws_iam_role.primary: Destruction complete after 1s
+
+Destroy complete! Resources: 14 destroyed.
+----
+
+Cleaning up AWS infrastructure.  Reviewing what's in:
+
+[source,text]
+----
+dap@zathras cockroachdb-testing $ aws s3 ls --recursive s3://oxide-cockroachdb-exploration-round2
+2020-12-15 10:18:30        157 crdb-exploration
+2020-11-02 08:41:17        156 crdb-exploration-round3
+2020-12-15 10:17:16        156 terraform-plus-slog
+2020-11-23 19:34:31  180481661 vminit-cockroachdb-prev.tgz
+2020-11-23 19:34:45  263946428 vminit-cockroachdb.tgz
+2020-10-28 15:38:13   13412672 vminit-common.tgz
+2020-11-24 10:45:50   84643099 vminit-mon.tgz
+dap@zathras cockroachdb-testing $
+----
+
+Those appear to be the latest vminit-*.tgz files, so I copied those to the more canonical bucket, which looked like this before:
+
+[source,text]
+----
+dap@lennier:~/dropbox$ aws s3 ls oxide-cockroachdb-exploration
+                           PRE data/
+2020-11-13 23:39:43 87348554912 cockroach-dump-kv-2020-11-11.sql
+2020-11-23 23:04:00   74978484 cockroach-v20.2.0-rc.3.illumos.tar.gz
+2020-11-23 23:01:14   90415200 cockroach-v20.2.0-rc.4.illumos.tar.gz
+2020-11-23 22:57:21   90421548 cockroach-v20.2.0.illumos.tar.gz
+2020-11-23 23:06:50   51028264 grafana-7.3.0-1604009393.illumos-amd64.tar.gz
+2020-11-23 22:03:34  198929508 proto-raw-2020-10-16.tgz
+2020-11-23 22:04:01  369013041 proto-raw-2020-11-23.tgz
+2020-11-23 22:52:20  369013041 proto-raw.tgz
+2020-09-14 23:00:45   93765576 vminit-cockroachdb.tgz
+2020-09-10 23:09:46   13412713 vminit-common.tgz
+2020-09-08 23:10:44   84117103 vminit-mon.tgz
+dap@lennier:~/dropbox$
+----
+
+after:
+
+[source,text]
+----
+dap@lennier:~$ aws s3 ls oxide-cockroachdb-exploration
+                           PRE data/
+2020-11-13 23:39:43 87348554912 cockroach-dump-kv-2020-11-11.sql
+2020-11-23 23:04:00   74978484 cockroach-v20.2.0-rc.3.illumos.tar.gz
+2020-11-23 23:01:14   90415200 cockroach-v20.2.0-rc.4.illumos.tar.gz
+2020-11-23 22:57:21   90421548 cockroach-v20.2.0.illumos.tar.gz
+2020-11-23 23:06:50   51028264 grafana-7.3.0-1604009393.illumos-amd64.tar.gz
+2020-11-23 22:03:34  198929508 proto-raw-2020-10-16.tgz
+2020-11-23 22:04:01  369013041 proto-raw-2020-11-23.tgz
+2020-11-23 22:52:20  369013041 proto-raw.tgz
+2020-12-15 18:26:42  263946428 vminit-cockroachdb.tgz
+2020-12-15 18:27:03   13412672 vminit-common.tgz
+2020-12-15 18:26:56   84643099 vminit-mon.tgz
+----
+
+In terms of the temporary "oxide-cockroachdb-exploration-round2" bucket: it looks like the remaining items are all empty Terraform files, so we can remove everything in this bucket and remove the bucket.  (Done.)

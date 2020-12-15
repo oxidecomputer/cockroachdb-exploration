@@ -90,7 +90,7 @@ echo "$VMI_ALIAS" > /etc/nodename
 # Figure on which disk to create our non-root zpool.
 if [[ "$VMI_ROLE" == "db" ]]; then
 	rpool_disk="$(zpool list -v -H rpool | awk 'NR == 2{ print $1 }')"
-	other_disks=$(diskinfo -Hp | awk '$2 != "'$rpool_disk'"')
+	other_disks=$(diskinfo -Hp | awk '$2 != "'$rpool_disk'"' | head -1)
 	if [[ $(wc -l <<< $other_disks) -ne 1 ]]; then
 		fail "could not choose disk for new zpool"
 	fi
