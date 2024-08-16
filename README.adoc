@@ -5,9 +5,9 @@
 
 = Exploration of CockroachDB for the control plane database
 
-See https://53.rfd.oxide.computer/[RFD 53 ("Control plane data storage requirements")] for background.
+See https://rfd.shared.oxide.computer/rfd/0053[RFD 53 ("Control plane data storage requirements")] for background.
 
-See https://110.rfd.oxide.computer/[RFD 110 ("CockroachDB for the control plane database")] for the results of this testing.
+See https://rfd.shared.oxide.computer/rfd/0110[RFD 110 ("CockroachDB for the control plane database")] for the results of this testing.
 
 == This repo
 
