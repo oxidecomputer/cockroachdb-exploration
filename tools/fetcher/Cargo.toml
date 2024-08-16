@@ -12,5 +12,5 @@ rusoto_credential = "0.45.0"
 rusoto_s3 = "0.45.0"
 
 [dependencies.tokio]
-version = "0.2.22"
+version = "1.18.5"
 features = [ "io-std" ]
